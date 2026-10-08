@@ -360,7 +360,7 @@ public class AprilTagFollower : MonoBehaviour
     // 태그 크기값(tagSize)은 흰 네모(가운데 5칸) 한 변이고 전체는 9칸 → 바깥 꼭짓점 = ±0.9 × tagSize.
     void PlaceFixed()
     {
-        float half = 0.9f * tagSize;
+        float half = 0.9f * EffectiveTagSize;   // 깊이 센서로 보정된 실제 태그 크기 기준
         Vector3 local = new Vector3(
             -half + cornerOffset.x + quadWidth * 0.5f,
              half - cornerOffset.y - quadHeight * 0.5f,
@@ -400,6 +400,9 @@ public class AprilTagFollower : MonoBehaviour
         plane.SetPositionAndRotation(Vector3.Lerp(plane.position, targetPos, a),
                                      Quaternion.Slerp(plane.rotation, targetRot, a));
     }
+
+    // 깊이 센서가 알려준 실제 태그 크기 (흰 네모 한 변, m)
+    float EffectiveTagSize => useDepthSensor && hasDepthRatio ? tagSize * depthRatio : tagSize;
 
     // ── 판 위치·크기 조절 (PC 콘솔: off x y / size w h, 단위 cm) ──────────────
     const string LayoutKey = "aprilTag_layout_";
@@ -527,7 +530,7 @@ public class AprilTagFollower : MonoBehaviour
         {
             // 태그 전체(바깥 테두리 = 1.8 × tagSize) 크기의 얇은 판 → 실제 태그와 겹치면 인식 위치가 맞는 것
             gizmo.SetPositionAndRotation(obsPos, obsRot);
-            gizmo.localScale = new Vector3(1.8f * tagSize, 1.8f * tagSize, 0.002f);
+            gizmo.localScale = new Vector3(1.8f * EffectiveTagSize, 1.8f * EffectiveTagSize, 0.002f);
         }
     }
 
