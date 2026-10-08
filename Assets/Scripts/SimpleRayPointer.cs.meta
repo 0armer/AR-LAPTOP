@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 2774f0404aaeddc478e1d7bdf58991e4
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - sender: {instanceID: 0}
+  - targetQuadRenderer: {instanceID: 0}
+  - spawnQuadPrefab: {fileID: 6380504249705902410, guid: a303e10fd957b4b459f329169cc443f7, type: 3}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
