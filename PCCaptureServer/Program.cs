@@ -400,6 +400,7 @@ class Program
 
         _ = Task.Run(RecConsoleLoop);     // 실험자 콘솔 (p / c / task / end / mark / note)
         _ = Task.Run(RecDesktopLoop);     // 데스크탑 창들의 위치·크기를 주기적으로 기록
+        _ = Task.Run(DesktopStreamLoop);  // [AR LAPTOP] 주 모니터 화면 통째로 → 모니터 판에 그림
 
         while (true)
         {
@@ -565,18 +566,114 @@ class Program
             statFrames = 0; statBytes = 0; statSkipped = 0;
         }
 
+        await BroadcastFrame(payload);
+    }
+
+    // 8081로 프레임 한 장을 모든 클라이언트에 보낸다.
+    // 창 캡처 루프와 데스크탑 화면 루프가 동시에 보내므로 락을 건다
+    // (웹소켓은 SendAsync가 동시에 두 개 걸리면 예외가 난다).
+    static readonly SemaphoreSlim frameSendLock = new(1, 1);
+    static async Task BroadcastFrame(byte[] payload)
+    {
+        List<WebSocket> snapshot;
+        lock (windowClients) snapshot = new List<WebSocket>(windowClients);
+
         var dead = new List<WebSocket>();
-        foreach (var ws in snapshot)
+        await frameSendLock.WaitAsync();
+        try
         {
-            if (ws.State == WebSocketState.Open)
+            foreach (var ws in snapshot)
             {
-                try { await ws.SendAsync(new ArraySegment<byte>(payload), WebSocketMessageType.Binary, true, default); }
-                catch { dead.Add(ws); }
+                if (ws.State == WebSocketState.Open)
+                {
+                    try { await ws.SendAsync(new ArraySegment<byte>(payload), WebSocketMessageType.Binary, true, default); }
+                    catch { dead.Add(ws); }
+                }
+                else dead.Add(ws);
             }
-            else dead.Add(ws);
         }
+        finally { frameSendLock.Release(); }
         if (dead.Count > 0)
             lock (windowClients) foreach (var d in dead) windowClients.Remove(d);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // [AR LAPTOP] 데스크탑 화면 통째로 보내기
+    //
+    // 주 모니터(0번) 화면 전체를 찍어서 ID = DesktopFrameId(-1) 로 8081에 보낸다.
+    // 유니티의 DesktopScreenView가 이 ID를 등록해서 모니터 판 위에 그린다.
+    // 꺼낸 창은 투명(알파 0)이라 이 화면에는 안 찍힌다 → AR로 나간 창은 판에서 사라져 보인다.
+    // ─────────────────────────────────────────────────────────────────────────
+    const long DesktopFrameId = -1;
+    static bool DesktopStreamOn = true;
+    static int DesktopMaxSide = 1920;     // 긴 변 최대 픽셀. 느리면 1280
+    static int DesktopIntervalMs = 50;    // 20장/초
+    static long DesktopJpegQuality = 80L;
+
+    static async Task DesktopStreamLoop()
+    {
+        ulong lastHash = 0;
+        int same = 0;
+        while (true)
+        {
+            long t0 = Environment.TickCount64;
+            if (DesktopStreamOn)
+            {
+                try
+                {
+                    var m = monitors.Count > 0 ? monitors[0] : new Mon { X = 0, Y = 0, W = screenWidth, H = screenHeight };
+                    byte[] jpeg;
+                    using (var bmp = new Bitmap(m.W, m.H, PixelFormat.Format32bppRgb))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(m.X, m.Y, 0, 0, new Size(m.W, m.H), CopyPixelOperation.SourceCopy);
+
+                        Bitmap send = bmp;
+                        Bitmap scaled = null;
+                        int longSide = Math.Max(m.W, m.H);
+                        if (DesktopMaxSide > 0 && longSide > DesktopMaxSide)
+                        {
+                            double sc = (double)DesktopMaxSide / longSide;
+                            int nw = Math.Max(1, (int)Math.Round(m.W * sc));
+                            int nh = Math.Max(1, (int)Math.Round(m.H * sc));
+                            scaled = new Bitmap(nw, nh, PixelFormat.Format32bppRgb);
+                            using (var g3 = Graphics.FromImage(scaled))
+                            {
+                                g3.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                                g3.DrawImage(bmp, 0, 0, nw, nh);
+                            }
+                            send = scaled;
+                        }
+
+                        using var ms = new MemoryStream();
+                        if (JpegCodec != null)
+                        {
+                            using var eps = new EncoderParameters(1);
+                            eps.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, DesktopJpegQuality);
+                            send.Save(ms, JpegCodec, eps);
+                        }
+                        else send.Save(ms, ImageFormat.Jpeg);
+                        jpeg = ms.ToArray();
+                        scaled?.Dispose();
+                    }
+
+                    ulong h = QuickHash(jpeg);
+                    if (h == lastHash && same < MaxSameSkip) same++;
+                    else
+                    {
+                        same = 0;
+                        lastHash = h;
+                        byte[] payload = new byte[8 + jpeg.Length];
+                        BitConverter.GetBytes(DesktopFrameId).CopyTo(payload, 0);
+                        jpeg.CopyTo(payload, 8);
+                        await BroadcastFrame(payload);
+                    }
+                }
+                catch (Exception ex) { Console.WriteLine($"[데스크탑 화면] 캡처 오류: {ex.Message}"); }
+            }
+            int wait = DesktopIntervalMs - (int)(Environment.TickCount64 - t0);
+            await Task.Delay(Math.Max(5, wait));
+        }
     }
 
     // 프레임에서 "거의 검은 픽셀"의 비율(0~1)을 빠르게 샘플링한다.

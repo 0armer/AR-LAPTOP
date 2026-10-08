@@ -197,6 +197,12 @@ public class HandRayPointer : MonoBehaviour
     // 지금 이 손이 꼬집고 있는 AR 창 (QuadLinkManager가 창↔창 연결을 감지할 때 사용)
     public WindowQuadReceiver PinchedWindow => clickTarget;
 
+    // [AR LAPTOP] 이 손이 지금 그 창의 위치/크기를 정하고 있는지 (꺼내 드는 중 / 주먹으로 잡음 / 가장자리 리사이즈).
+    // WindowsFollowDesktop가 판을 따라 창을 옮길 때 이 창은 건너뛴다.
+    public bool IsManipulating(GameObject q) =>
+        q != null && (q == heldQuad || q == grabbedQuad ||
+                      (resizingEdge && activeResizer != null && activeResizer.gameObject == q));
+
     // 데스크탑(모니터 판)을 핀치로 누르고 있는 중인지.
     // "데스크탑 꼬집 → AR 창 꼬집 = 화살표" 제스처를 QuadLinkManager가 판정할 때 쓴다.
     private Transform pinchedMonitorT = null;

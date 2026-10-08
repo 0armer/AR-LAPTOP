@@ -69,6 +69,10 @@ public class ConditionManager : MonoBehaviour
         monitorCount = EditorPrefs.GetInt(PrefMons, monitorCount);
         linksEnabled = EditorPrefs.GetBool(PrefLinks, linksEnabled);
 #endif
+        // [AR LAPTOP] 모니터 1대 · 선 없음 고정. 메뉴/콘솔에서 뭘 골라도 바뀌지 않는다.
+        monitorCount = 1;
+        linksEnabled = false;
+
         // 다른 스크립트가 Awake/Start에서 이 값을 읽으므로 여기서 먼저 확정한다
         MonitorCount = Mathf.Clamp(monitorCount, 1, 8);
         LinksEnabled = linksEnabled;
@@ -89,6 +93,8 @@ public class ConditionManager : MonoBehaviour
     /// <param name="newRecording">기록 파일을 새로 열지</param>
     public void Apply(int monitors, bool links, bool clearWindows = true, bool newRecording = true)
     {
+        monitors = 1;      // [AR LAPTOP] 고정
+        links = false;     // [AR LAPTOP] 고정
         MonitorCount = Mathf.Clamp(monitors, 1, 8);
         LinksEnabled = links;
         monitorCount = MonitorCount;
