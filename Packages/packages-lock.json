@@ -107,7 +107,7 @@
     },
     "com.unity.burst": {
       "version": "1.8.29",
-      "depth": 2,
+      "depth": 1,
       "source": "registry",
       "dependencies": {
         "com.unity.mathematics": "1.2.1",
@@ -360,6 +360,14 @@
         "com.unity.xr.legacyinputhelpers": "2.1.2"
       },
       "url": "https://packages.unity.com"
+    },
+    "jp.keijiro.apriltag": {
+      "version": "file:jp.keijiro.apriltag",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "com.unity.burst": "1.6.5"
+      }
     },
     "com.unity.modules.accessibility": {
       "version": "1.0.0",

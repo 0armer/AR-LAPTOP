@@ -62,6 +62,24 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("끄면 판을 안 움직인다 (인식만)")]
     public bool follow = true;
 
+    [Header("판 배치 (태그 = 판의 왼쪽 위 모서리)")]
+    [Tooltip("켜면 태그를 보는 순간 판을 태그 기준 고정 위치에 붙인다 (손 캘리브레이션 불필요). " +
+             "끄면 예전 방식(손으로 그린 판과 태그 사이 거리를 저장해서 따라감)")]
+    public bool fixedLayout = true;
+    [Tooltip("판 가로(m). A4 가로 = 0.297")]
+    public float quadWidth = 0.297f;
+    [Tooltip("판 세로(m). A4 세로 = 0.210")]
+    public float quadHeight = 0.210f;
+    [Tooltip("태그 바깥 왼쪽 위 꼭짓점에서 판의 왼쪽 위 꼭짓점까지 (오른쪽+, 아래+) m. 0이면 딱 맞춤")]
+    public Vector2 cornerOffset = Vector2.zero;
+    [Tooltip("판을 태그 면에서 보는 쪽으로 띄우는 거리(m)")]
+    public float liftFromSurface = 0.002f;
+    [Tooltip("화면이 좌우로 뒤집혀 보이면 (0,180,0)")]
+    public Vector3 rotationOffset = Vector3.zero;
+
+    // 한 번이라도 태그를 봤는지. 보기 전엔 화면 판을 숨긴다(DesktopScreenView가 읽음).
+    public bool HasEverSeen { get; private set; }
+
     PassthroughCameraAccess pca;
     TagDetector detector;
     int detW, detH;
@@ -237,6 +255,12 @@ public class AprilTagFollower : MonoBehaviour
         var cal = MonitorHandCalibrator.Instance;
         if (cal != null && cal.IsPlacing) return;
 
+        if (fixedLayout && follow)
+        {
+            PlaceFixed();
+            return;
+        }
+
         if (recaptureRequested || (!hasOffset && IsCalibrated()))
         {
             Capture();
@@ -247,6 +271,39 @@ public class AprilTagFollower : MonoBehaviour
 
         Vector3 targetPos = obsPos + obsRot * offPos;
         Quaternion targetRot = obsRot * offRot;
+        float a = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
+        plane.SetPositionAndRotation(Vector3.Lerp(plane.position, targetPos, a),
+                                     Quaternion.Slerp(plane.rotation, targetRot, a));
+    }
+
+    // 태그 = 판의 왼쪽 위 모서리. 판은 태그와 같은 면 위에서 오른쪽·아래로 펼쳐진다.
+    //
+    // keijiro가 주는 태그 회전(유니티 기준): 로컬 +x = 인쇄된 태그의 오른쪽, +y = 위쪽,
+    // +z = 종이 속으로(보는 사람 반대쪽). 유니티 Quad는 -z 쪽에서 보이므로 태그 회전을 그대로 쓰면
+    // 화면이 뒤집히지 않고 똑바로 보인다.
+    // 태그 크기값(tagSize)은 흰 네모(가운데 5칸) 한 변이고 전체는 9칸 → 바깥 꼭짓점 = ±0.9 × tagSize.
+    void PlaceFixed()
+    {
+        float half = 0.9f * tagSize;
+        Vector3 local = new Vector3(
+            -half + cornerOffset.x + quadWidth * 0.5f,
+             half - cornerOffset.y - quadHeight * 0.5f,
+            -liftFromSurface);
+        Vector3 targetPos = obsPos + obsRot * local;
+        Quaternion targetRot = obsRot * Quaternion.Euler(rotationOffset);
+
+        // 앵커 밑에 붙어 있으면 앵커가 움직일 때 같이 흔들리므로 떼어낸다 (크기도 월드 기준으로 맞추기 위해)
+        if (plane.parent != null) plane.SetParent(null, true);
+        var s = plane.localScale;
+        plane.localScale = new Vector3(quadWidth, quadHeight, s.z);
+
+        if (!HasEverSeen)
+        {
+            plane.SetPositionAndRotation(targetPos, targetRot);   // 처음엔 바로 붙인다
+            HasEverSeen = true;
+            Debug.Log("[AprilTag] 태그 발견 → 판을 태그 오른쪽 아래로 붙임 (A4 크기)");
+            return;
+        }
         float a = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
         plane.SetPositionAndRotation(Vector3.Lerp(plane.position, targetPos, a),
                                      Quaternion.Slerp(plane.rotation, targetRot, a));
