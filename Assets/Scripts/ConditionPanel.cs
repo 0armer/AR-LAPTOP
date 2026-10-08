@@ -85,7 +85,7 @@ public class ConditionPanel : MonoBehaviour
         if (!built) { TryBuild(); return; }
 
         // 태스크 중에는 숨긴다
-        bool show = !(hideDuringTask && SessionRecorder.Instance != null && SessionRecorder.Instance.TaskRunning);
+        bool show = true;   // [AR LAPTOP] 기록(태스크) 기능 제거
         if (root.gameObject.activeSelf != show) root.gameObject.SetActive(show);
         if (!show) { hovered = null; return; }
 

@@ -95,10 +95,6 @@ public class PCStreamReceiver : MonoBehaviour
                 websocket = ws;
                 Debug.Log("[PCStream] 연결됨 → " + serverUrl);
 
-                // 끊겼다가 다시 붙은 경우, 서버는 이 세션을 모르는 상태다.
-                // 기록기가 meta를 다시 보내야 서버가 파일을 새로 연다.
-                if (SessionRecorder.Instance != null)
-                    SessionRecorder.Instance.OnPCReconnected();
 
                 // 연결이 끊길 때까지 여기서 머문다
                 await Task.Run(() => ReceiveLoop(ws, token), token);
@@ -204,9 +200,13 @@ public class PCStreamReceiver : MonoBehaviour
 
     void Update()
     {
-        // 실험 진행 명령 (PC 콘솔에서 참가자/태스크를 바꾼 것)
+        // [AR LAPTOP] PC 콘솔 명령. 기록 기능은 없고, x(창 전부 되돌리기)만 처리한다
         while (incomingStudy.TryDequeue(out string studyMsg))
-            if (SessionRecorder.Instance != null) SessionRecorder.Instance.HandleStudyCommand(studyMsg);
+        {
+            var parts = studyMsg.Split(',');
+            if (parts.Length >= 2 && parts[1].Trim() == "clear" && ConditionManager.Instance != null)
+                ConditionManager.Instance.ClearAllWindows();
+        }
 
         byte[] latest = null;
         while (incomingFrames.TryDequeue(out var frame))

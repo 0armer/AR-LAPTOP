@@ -351,16 +351,14 @@ class Program
         Console.CancelKeyPress += (sender, e) =>
         {
             e.Cancel = true;              // 즉시 종료 막고 마무리 먼저
-            RecShutdown().GetAwaiter().GetResult();
             RestoreAllWindows();
-            RecClose();
-            Console.WriteLine("[기록] 저장 완료. 종료합니다.");
+            Console.WriteLine("창 복원 완료. 종료합니다.");
             Environment.Exit(0);
         };
-        AppDomain.CurrentDomain.ProcessExit += (sender, e) => { RestoreAllWindows(); RecClose(); };
+        AppDomain.CurrentDomain.ProcessExit += (sender, e) => { RestoreAllWindows(); };
 
         // localhost 전용이면 APK(퀘스트 단독 실행)에서 접속이 안 된다. 가능하면 모든 랜 인터페이스로 연다.
-        RecInit();
+        PrintHelp();
 
         var controlListener = StartListener(8080, out bool ctrlAll);
         var windowListener = StartListener(8081, out bool winAll);
@@ -400,8 +398,7 @@ class Program
             }
         });
 
-        _ = Task.Run(RecConsoleLoop);     // 실험자 콘솔 (p / c / task / end / mark / note)
-        _ = Task.Run(RecDesktopLoop);     // 데스크탑 창들의 위치·크기를 주기적으로 기록
+        _ = Task.Run(ConsoleLoop);        // 콘솔 명령 (x / cap / q)
         _ = Task.Run(DesktopStreamLoop);  // [AR LAPTOP] 주 모니터 화면 통째로 → 모니터 판에 그림
 
         while (true)
@@ -749,7 +746,7 @@ class Program
         try
         {
             // Unity가 보낸 세션 기록 묶음
-            if (msg.StartsWith("srec,")) { RecWrite(msg.Substring(5)); return; }
+            if (msg.StartsWith("srec,")) return;   // [AR LAPTOP] 기록 안 함
 
             var parts = msg.Split(',');
             string type = parts[0];
@@ -760,7 +757,6 @@ class Program
                 long id = long.Parse(parts[1]);
                 float wu = float.Parse(parts[2]);
                 float wv = float.Parse(parts[3]);
-                RecEvent("pc_click", "\"id\":" + id + ",\"uv\":[" + F2(wu) + "," + F2(wv) + "]");
                 WindowClick(new IntPtr(id), wu, wv);
                 return;
             }
@@ -807,7 +803,6 @@ class Program
                 long id = long.Parse(parts[1]);
                 int pxW = int.Parse(parts[2]);
                 int pxH = int.Parse(parts[3]);
-                RecEvent("pc_resize", "\"id\":" + id + ",\"px\":[" + pxW + "," + pxH + "]");
                 WindowResize(new IntPtr(id), pxW, pxH);
                 return;
             }
@@ -945,8 +940,6 @@ class Program
         int wh = wr.Bottom - wr.Top;
         long gid = hwnd.ToInt64();
         Console.WriteLine($"★ EJECT: \"{GetTitle(hwnd)}\" id={gid} {ww}x{wh}");
-        RecLine("{\"k\":\"wtitle\",\"id\":" + gid + ",\"title\":\"" + RecEsc(GetTitle(hwnd)) + "\""
-              + ",\"px\":[" + ww + "," + wh + "],\"rect\":[" + wr.Left + "," + wr.Top + "," + wr.Right + "," + wr.Bottom + "]}");
         // 창이 모니터 경계 밖으로 삐져나가 있으면(주먹으로 끌다가 가장자리에서 놓은 경우 등)
         // 온전히 화면 안으로 들어오도록 위치만 보정한다 - 잘린 채로 있으면 나중에 그
         // 잘린 부분은 커서 클램핑 때문에 클릭도 안 먹는다.
@@ -1279,221 +1272,29 @@ class Program
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // 세션 기록 (PC 쪽)
-    //
-    //   replay/<참가자>/<참가자>_<조건>_<세션>.jsonl
-    //     Unity가 보낸 좌표 기록 + PC만 아는 것(창 제목, 데스크탑 창 사각형)이
-    //     한 파일에 시간순으로 쌓인다. replay/replay.html 에 끌어다 놓으면 재생된다.
-    //     조건을 바꿀 때마다 파일이 새로 열린다 → 조건마다 따로 저장된다.
-    //
-    // 실험자용 콘솔 명령 (서버 창에 그냥 타이핑):
-    //   p P07        참가자 설정 (새 파일이 열린다)
-    //   c hybrid     조건 설정
-    //   task 1       태스크 시작        end   태스크 종료
-    //   cond 2 on    조건 전환 (모니터 수, 선 on/off) — 헤드셋 패널로도 가능
-    //   clear        공중의 창을 전부 데스크탑으로
-    //   mark rec     영상 동기화 표시   note …  자유 메모
-    //   where        현재 기록 파일 경로
+    // [AR LAPTOP] 콘솔 (기록 기능 없음)
+    //   x / clear   공중의 창 전부 데스크탑으로
+    //   cap 1920    창 캡처 긴 변 최대 픽셀 (0 = 원본)
+    //   q 90        JPEG 품질
+    //   ?           도움말
     // ═════════════════════════════════════════════════════════════════════════
-    static readonly object recLock = new();
-    static StreamWriter recFile;
-    static string recPath = "";
-    static string recRoot = "";
-    static string recParticipant = "P00";
-    static string recTask = "none";
-    static string recCond = "M2L1";
-    // 실험자가 콘솔에서 참가자를 직접 정했으면, 헤드셋이 보내는 기본값(P00)이
-    // 그걸 덮어쓰지 못하게 한다. 파일 이름은 실험자가 친 그대로가 된다.
-    static bool recParticipantPinned = false;
-    static double recUnityTime = 0;   // Unity 프레임에서 읽은 시각 (한 타임라인으로 맞추기 위해)
-
-    static void RecInit()
-    {
-        // bin/Debug 안이 아니라 프로젝트 폴더에 쌓이게 위로 올라가 본다
-        recRoot = Path.Combine(AppContext.BaseDirectory, "replay");
-        var probe = new DirectoryInfo(AppContext.BaseDirectory);
-        for (int i = 0; i < 5 && probe != null; i++)
-        {
-            if (File.Exists(Path.Combine(probe.FullName, "Program.cs")))
-            { recRoot = Path.Combine(probe.FullName, "replay"); break; }
-            probe = probe.Parent;
-        }
-        Directory.CreateDirectory(recRoot);
-        Console.WriteLine($"[기록] 폴더: {recRoot}");
-        PrintRecHelp();
-    }
-
-    static void RecOpen(string participant, string session, string cond)
-    {
-        lock (recLock)
-        {
-            try { recFile?.Flush(); recFile?.Dispose(); } catch { }
-            recFile = null;
-            try
-            {
-                string dir = Path.Combine(recRoot, Safe(participant));
-                Directory.CreateDirectory(dir);
-                recPath = Path.Combine(dir, $"{Safe(participant)}_{Safe(cond)}_{Safe(session)}.jsonl");
-                recFile = new StreamWriter(recPath, true, new UTF8Encoding(false)) { AutoFlush = true };
-                Console.WriteLine($"[기록] 파일 → {recPath}");
-            }
-            catch (Exception ex) { Console.WriteLine("[기록] 파일 열기 실패: " + ex.Message); }
-        }
-    }
-
-    // Unity가 보낸 줄 묶음
-    static void RecWrite(string payload)
-    {
-        var lines = payload.Split('\n');
-        foreach (var line in lines)
-        {
-            if (line.Length == 0) continue;
-
-            // 새 세션이 시작되면 파일을 새로 연다
-            if (line.StartsWith("{\"k\":\"meta\""))
-            {
-                string p = RecField(line, "\"p\":\"");
-                string sess = RecField(line, "\"session\":\"");
-                string cond = RecField(line, "\"cond\":\"");
-                if (!recParticipantPinned && p.Length > 0) recParticipant = p;
-                if (cond.Length > 0) recCond = cond;
-                RecOpen(recParticipant, sess.Length > 0 ? sess : DateTime.Now.ToString("yyyyMMdd_HHmmss"), recCond);
-            }
-            // 프레임에서 시각을 읽어둔다 → PC가 만드는 레코드도 같은 타임라인에 얹는다
-            else if (line.StartsWith("{\"k\":\"f\""))
-            {
-                int i = line.IndexOf("\"t\":");
-                if (i >= 0)
-                {
-                    int j = i + 4, e = j;
-                    while (e < line.Length && (char.IsDigit(line[e]) || line[e] == '.' || line[e] == '-')) e++;
-                    double.TryParse(line.Substring(j, e - j), NumberStyles.Float, CultureInfo.InvariantCulture, out recUnityTime);
-                }
-            }
-            else if (line.StartsWith("{\"k\":\"task\""))
-            {
-                string nm = RecField(line, "\"name\":\"");
-                recTask = line.Contains("\"op\":\"end\"") ? "none" : (nm.Length > 0 ? nm : recTask);
-            }
-
-            RecLine(line, false);
-        }
-    }
-
-    // PC가 직접 만드는 줄 (창 제목, 데스크탑 사각형, 실험자 메모 …)
-    static void RecLine(string line, bool stampTime = true)
-    {
-        lock (recLock)
-        {
-            if (recFile == null) return;
-            try
-            {
-                if (stampTime && line.StartsWith("{"))
-                    line = "{\"t\":" + recUnityTime.ToString("0.###", CultureInfo.InvariantCulture) + "," + line.Substring(1);
-                recFile.WriteLine(line);
-            }
-            catch { }
-        }
-    }
-
-    static void RecEvent(string type, string extraJson = null)
-    {
-        string s = "{\"k\":\"ev\",\"src\":\"pc\",\"e\":\"" + RecEsc(type) + "\"";
-        if (!string.IsNullOrEmpty(extraJson)) s += "," + extraJson;
-        RecLine(s + "}");
-    }
-
-    // Ctrl+C로 끌 때: 진행 중인 태스크를 마감하라고 헤드셋에 알리고,
-    // 마지막 기록이 넘어올 시간을 준 뒤에 파일을 닫는다.
-    // (Unity는 0.2초마다 묶어서 보내므로 조금 기다려야 마지막 줄이 안 날아간다)
-    static async Task RecShutdown()
-    {
-        try
-        {
-            Console.WriteLine("[기록] 태스크 마감 + 저장 중…");
-            await RecBroadcast("study,end,");
-            await Task.Delay(900);
-        }
-        catch { }
-    }
-
-    static void RecClose()
-    {
-        lock (recLock)
-        {
-            try { recFile?.Flush(); recFile?.Dispose(); } catch { }
-            recFile = null;
-        }
-    }
-
-    // 파일 이름에 쓸 수 없는 글자 정리
-    static string Safe(string s)
-    {
-        if (string.IsNullOrWhiteSpace(s)) return "none";
-        var b = new StringBuilder(s.Length);
-        foreach (char c in s.Trim())
-            b.Append(Array.IndexOf(Path.GetInvalidFileNameChars(), c) >= 0 || c == ' ' ? '_' : c);
-        return b.ToString();
-    }
-
-    static bool AllDigits(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return false;
-        foreach (char c in s) if (!char.IsDigit(c)) return false;
-        return true;
-    }
-
-    static void PrintRecHelp()
+    static void PrintHelp()
     {
         Console.WriteLine();
         Console.WriteLine("  ┌─ AR LAPTOP ───────────────────────────────────┐");
         Console.WriteLine("  │  주 모니터 1개를 통째로 복제해서 판에 보낸다     │");
         Console.WriteLine("  │  판 위치는 헤드셋이 AprilTag(ID 0)로 정한다      │");
         Console.WriteLine("  ├───────────────────────────────────────────────┤");
-        Console.WriteLine("  │  p0       참가자 P0  (기록 파일 이름용)          │");
-        Console.WriteLine("  │  t1       태스크 1 시작   (t2, t3 …)            │");
         Console.WriteLine("  │  x        공중의 창 전부 되돌리기               │");
-        Console.WriteLine("  │  m 라벨    영상 동기화 표시                     │");
-        Console.WriteLine("  │  Ctrl+C   종료 — 저장 + 창 복원                 │");
+        Console.WriteLine("  │  cap 1280 창 캡처 해상도 낮추기 (0 = 원본)       │");
+        Console.WriteLine("  │  q 80     JPEG 품질                             │");
+        Console.WriteLine("  │  Ctrl+C   종료 — 꺼낸 창 원래대로 복원          │");
         Console.WriteLine("  └───────────────────────────────────────────────┘");
         Console.WriteLine();
     }
 
-    static string RecField(string line, string key)
-    {
-        int i = line.IndexOf(key);
-        if (i < 0) return "";
-        int j = i + key.Length;
-        int e = line.IndexOf('"', j);
-        return e < 0 ? "" : line.Substring(j, e - j);
-    }
-
-    static string RecEsc(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return "";
-        var b = new StringBuilder(s.Length + 8);
-        foreach (char c in s)
-        {
-            if (c == '"') b.Append("\\\"");
-            else if (c == '\\') b.Append("\\\\");
-            else if (c < 32) b.Append(' ');
-            else b.Append(c);
-        }
-        return b.ToString();
-    }
-
-    static string F2(float v) => v.ToString("0.####", CultureInfo.InvariantCulture);
-
-    // Unity로 실험 명령 보내기
-    static bool AnyControlClient()
-    {
-        lock (controlClients)
-            foreach (var ws in controlClients)
-                if (ws != null && ws.State == WebSocketState.Open) return true;
-        return false;
-    }
-
-    static async Task RecBroadcast(string msg)
+    // 헤드셋(8080)으로 글자 명령 보내기
+    static async Task SendToHeadset(string msg)
     {
         List<WebSocket> targets;
         lock (controlClients) targets = new List<WebSocket>(controlClients);
@@ -1506,59 +1307,7 @@ class Program
         }
     }
 
-    // "p0", "t1", "." 처럼 붙여 쓴 짧은 형태인가
-    static bool IsShort(string tk)
-    {
-        if (tk.Length == 0) return false;
-        if (tk == "." || tk == "x" || tk == "?") return true;
-        if (AllDigits(tk)) return true;
-        char c0 = char.ToLowerInvariant(tk[0]);
-        // p07 / t1 / c3  (c는 실험 조건 번호)
-        return tk.Length > 1 && (c0 == 'p' || c0 == 't' || c0 == 'c') && AllDigits(tk.Substring(1));
-    }
-
-    // 실험 조건 번호(1~4)를 (모니터 수, 선 여부)로 푼다.
-    //   1 → 모니터 1대 · 선 없음      2 → 모니터 1대 · 선 있음
-    //   3 → 모니터 2대 · 선 없음      4 → 모니터 2대 · 선 있음
-    static bool CondFromNumber(string n, out int mons, out bool links)
-    {
-        mons = 1; links = false;
-        switch (n)
-        {
-            case "1": mons = 1; links = false; return true;
-            case "2": mons = 1; links = true; return true;
-            case "3": mons = 2; links = false; return true;
-            case "4": mons = 2; links = true; return true;
-        }
-        return false;
-    }
-
-    // 한 토막을 (명령, 인자)로 푼다
-    static void ParseRecToken(string tk, out string cmd, out string arg)
-    {
-        int sp = tk.IndexOf(' ');
-        cmd = (sp < 0 ? tk : tk.Substring(0, sp)).ToLowerInvariant();
-        arg = sp < 0 ? "" : tk.Substring(sp + 1).Trim();
-
-        //   1 / t1  → 태스크 시작        .  → 태스크 종료
-        //   p0      → 참가자 P0          x  → 창 전부 되돌리기
-        if (AllDigits(tk)) { cmd = "task"; arg = tk; }
-        else if (tk == ".") { cmd = "end"; arg = ""; }
-        else if (tk == "x") { cmd = "clear"; arg = ""; }
-        else if (tk == "?") { cmd = "help"; arg = ""; }
-        else if (tk.Length > 1 && (tk[0] == 't' || tk[0] == 'T') && AllDigits(tk.Substring(1)))
-        { cmd = "task"; arg = tk.Substring(1); }
-        else if (tk.Length > 1 && (tk[0] == 'p' || tk[0] == 'P') && AllDigits(tk.Substring(1)))
-        { cmd = "p"; arg = tk.ToUpperInvariant(); }
-        //   c1 ~ c4 → 실험 조건 번호
-        else if (tk.Length > 1 && (tk[0] == 'c' || tk[0] == 'C') && AllDigits(tk.Substring(1)))
-        { cmd = "c"; arg = tk.Substring(1); }
-
-        // "p 07" 처럼 숫자만 준 경우 P를 붙여준다
-        if ((cmd == "p" || cmd == "participant") && AllDigits(arg)) arg = "P" + arg;
-    }
-
-    static async Task RecConsoleLoop()
+    static async Task ConsoleLoop()
     {
         while (true)
         {
@@ -1567,175 +1316,28 @@ class Program
             line = line.Trim();
             if (line.Length == 0) continue;
 
-            // "p0 t1" 처럼 한 줄에 두 개를 칠 수 있다
-            var tokens = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            if (tokens.Length > 1)
-            {
-                bool allShort = true;
-                foreach (var tk in tokens) if (!IsShort(tk)) { allShort = false; break; }
-                if (allShort)
-                {
-                    foreach (var tk in tokens)
-                    {
-                        ParseRecToken(tk, out string c2, out string a2);
-                        await RunRecCommand(c2, a2);
-                        await Task.Delay(120);   // 헤드셋이 순서대로 처리하도록 살짝 텀
-                    }
-                    continue;
-                }
-            }
+            int sp = line.IndexOf(' ');
+            string cmd = (sp < 0 ? line : line.Substring(0, sp)).ToLowerInvariant();
+            string arg = sp < 0 ? "" : line.Substring(sp + 1).Trim();
 
-            ParseRecToken(line, out string cmd, out string arg);
-            await RunRecCommand(cmd, arg);
-        }
-    }
-
-    static async Task RunRecCommand(string cmd, string arg)
-    {
-        {
             switch (cmd)
             {
-                case "p": case "participant":
-                    if (arg.Length == 0) { Console.WriteLine("[기록] 사용법: p0  또는  p P07"); break; }
-                    recParticipant = arg;
-                    recParticipantPinned = true;      // 이제 헤드셋 기본값이 못 덮어쓴다
-                    recTask = "none";
-                    await RecBroadcast("study,participant," + arg);
-                    Console.WriteLine($"[기록] 참가자 = {arg}   파일 이름: {Safe(arg)}_{Safe(recCond)}_<시각>.jsonl");
-                    if (!AnyControlClient())
-                        Console.WriteLine("[기록] !! 헤드셋이 아직 연결 안 됨 — 유니티를 Play 한 뒤 다시 치세요");
+                case "x": case "clear":
+                    await SendToHeadset("study,clear,");
+                    Console.WriteLine("[콘솔] 공중의 창을 데스크탑으로 되돌림");
                     break;
-                case "task": case "t":
-                    recTask = arg.Length > 0 ? arg : "task";
-                    await RecBroadcast("study,task," + recTask);
-                    Console.WriteLine($"[기록] 태스크 {recTask} 시작 — {recParticipant} / {recCond}");
-                    if (recPath.Length > 0) Console.WriteLine($"[기록] 파일 → {recPath}");
-                    if (!AnyControlClient())
-                        Console.WriteLine("[기록] !! 헤드셋이 아직 연결 안 됨 — 기록이 안 남습니다");
-                    break;
-                case "end": case "e":
-                    await RecBroadcast("study,end,");
-                    Console.WriteLine($"[기록] 태스크 종료: {recTask}");
-                    recTask = "none";
-                    break;
-                // [AR LAPTOP] 실험 조건(c1~c4·cond)은 없음. 모니터 1대·선 없음 고정
-                case "c": case "cond":
-                    Console.WriteLine("[AR LAPTOP] 조건 전환 없음 — 데스크탑 1개 복제만 한다");
-                    break;
-
-                case "clear":
-                    await RecBroadcast("study,clear,");
-                    Console.WriteLine("[기록] 공중의 창을 데스크탑으로 되돌림");
-                    break;
-
-                // aim 0~6 : 손 레이 조준축 바꾸기 (레이가 엉뚱한 쪽을 가리킬 때 진단용)
-                case "aim":
-                {
-                    string a = arg.Trim();
-                    if (a.Length == 0)
-                    {
-                        Console.WriteLine("[조준] 사용법: aim 0 ~ aim 6");
-                        Console.WriteLine("        0 앞(기본)  1 뒤  2 오른쪽  3 왼쪽  4 위  5 아래  6 검지방향");
-                        break;
-                    }
-                    await RecBroadcast("study,aim," + a);
-                    Console.WriteLine($"[조준] 조준축을 {a}번으로 바꿨습니다");
-                    break;
-                }
-
-                // cap 1920 → 보내는 그림의 긴 변을 1920px로 (0 = 원본 그대로)
-                // cap      → 지금 값 보기
                 case "cap":
-                {
-                    string n = arg.Trim();
-                    if (n.Length > 0 && int.TryParse(n, out int px) && px >= 0)
-                        MaxCaptureSide = px;
+                    if (arg.Length > 0 && int.TryParse(arg, out int px) && px >= 0) MaxCaptureSide = px;
                     Console.WriteLine($"[캡처] 최대 긴변 = {(MaxCaptureSide <= 0 ? "원본 그대로" : MaxCaptureSide + "px")} · 품질 = {JpegQualityVar}");
                     break;
-                }
-
-                // q 90 → JPEG 품질 (50~100). 높을수록 선명하지만 전송량이 는다
                 case "q":
-                {
-                    string n = arg.Trim();
-                    if (n.Length > 0 && long.TryParse(n, out long qv))
-                        JpegQualityVar = Math.Clamp(qv, 40L, 100L);
-                    Console.WriteLine($"[캡처] 품질 = {JpegQualityVar} · 최대 긴변 = {(MaxCaptureSide <= 0 ? "원본 그대로" : MaxCaptureSide + "px")}");
+                    if (arg.Length > 0 && long.TryParse(arg, out long qv)) JpegQualityVar = Math.Clamp(qv, 40L, 100L);
+                    Console.WriteLine($"[캡처] 품질 = {JpegQualityVar}");
                     break;
-                }
-
-                // [AR LAPTOP] 손 배치 없음. 판은 AprilTag가 붙인다
-                case "cal":
-                    Console.WriteLine("[AR LAPTOP] 손 배치 안 씀 — 판은 AprilTag(ID 0)를 보면 자동으로 붙는다");
-                    break;
-
-                case "mark": case "m":
-                    await RecBroadcast("study,mark," + arg);
-                    RecEvent("pc_mark", "\"label\":\"" + RecEsc(arg) + "\",\"unix_ms\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds());
-                    Console.WriteLine($"[기록] 표시: {arg}");
-                    break;
-                case "note": case "n":
-                    await RecBroadcast("study,note," + arg);
-                    RecEvent("pc_note", "\"text\":\"" + RecEsc(arg) + "\"");
-                    break;
-                case "where": case "w":
-                    Console.WriteLine($"[기록] {(recPath.Length > 0 ? recPath : "(아직 없음 - 헤드셋이 연결되면 생김)")}");
-                    break;
-                case "help":
                 default:
-                    PrintRecHelp();
+                    PrintHelp();
                     break;
             }
         }
     }
-
-    // 데스크탑에 남아 있는 창들의 위치·크기 (AR로 꺼낸 것은 state=ar)
-    static async Task RecDesktopLoop()
-    {
-        while (true)
-        {
-            try
-            {
-                if (recFile != null)
-                {
-                    List<IntPtr> ejected;
-                    lock (ejectLock) ejected = new List<IntPtr>(ejectedWindows);
-                    var all = new List<IntPtr>(originalPlacements.Keys);
-                    foreach (var h in ejected) if (!all.Contains(h)) all.Add(h);
-
-                    var sb = new StringBuilder();
-                    sb.Append("{\"k\":\"desk\",\"win\":[");
-                    bool first = true;
-                    foreach (var hwnd in all)
-                    {
-                        if (!GetWindowRect(hwnd, out var r)) continue;
-                        if (!first) sb.Append(',');
-                        first = false;
-                        sb.Append("{\"id\":").Append(hwnd.ToInt64())
-                          .Append(",\"rect\":[").Append(r.Left).Append(',').Append(r.Top).Append(',')
-                          .Append(r.Right).Append(',').Append(r.Bottom).Append(']')
-                          .Append(",\"mon\":").Append(RecMonitorOf(r))
-                          .Append(",\"ar\":").Append(ejected.Contains(hwnd) ? "true" : "false")
-                          .Append('}');
-                    }
-                    sb.Append("]}");
-                    if (!first) RecLine(sb.ToString());
-                }
-            }
-            catch { }
-            await Task.Delay(500);
-        }
-    }
-
-    static int RecMonitorOf(RECT r)
-    {
-        int cx = (r.Left + r.Right) / 2, cy = (r.Top + r.Bottom) / 2;
-        for (int i = 0; i < monitors.Count; i++)
-        {
-            var m = monitors[i];
-            if (cx >= m.X && cx < m.X + m.W && cy >= m.Y && cy < m.Y + m.H) return i;
-        }
-        return -1;
-    }
-
 }

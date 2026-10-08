@@ -109,8 +109,6 @@ public class ConditionManager : MonoBehaviour
 
         if (showPanelInHeadset) ConditionPanel.Show(); else ConditionPanel.Hide();
 
-        if (newRecording && SessionRecorder.Instance != null)
-            SessionRecorder.Instance.BeginConditionRun();
     }
 
     // ── 모니터 판 켜고 끄기 ──────────────────────────────────────────────────
