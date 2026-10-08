@@ -1,0 +1,351 @@
+using System;
+using AprilTag;
+using Meta.XR;
+using Unity.Collections;
+using UnityEngine;
+using UnityEngine.Rendering;
+
+// [AR LAPTOP] 노트북(물체)에 붙인 AprilTag를 패스스루 카메라로 찾아서, 모니터 판이 그 물체를 따라가게 한다.
+//
+// 흐름
+//   1. PassthroughCameraAccess(Meta, 헤드셋 바깥 카메라 영상)로 영상을 받는다
+//   2. GPU → CPU로 비동기 복사 (AsyncGPUReadback, 메인 스레드를 안 멈춤)
+//   3. keijiro AprilTag(jp.keijiro.apriltag)로 태그 찾기 → 카메라 기준 위치·회전
+//   4. 그 영상을 찍은 순간의 카메라 위치를 곱해서 월드 좌표로
+//   5. "태그 → 판" 오프셋을 적용해서 판을 부드럽게 옮긴다
+//   → 판이 움직이면 WindowsFollowDesktop가 꺼낸 창들도 같이 옮긴다
+//
+// 오프셋(태그와 판 사이 상대 위치)
+//   · 손으로 판을 그려서 확정하면, 그 직후 태그가 보이는 순간의 상대 위치를 저장한다 (PlayerPrefs)
+//   · 저장된 게 없고 판이 이미 캘리브레이션돼 있으면, 태그를 처음 본 순간 저장한다
+//   · 다시 잡으려면: 손으로 판을 다시 그리거나, 유니티 메뉴 `실험 ▸ AprilTag ▸ 오프셋 다시 잡기`
+//
+// 태그: tagStandard41h12 (keijiro는 이 종류만 읽음). 크기값 = 검은 띠 안쪽 흰 네모 한 변(m)
+// 주의: 패스스루 카메라는 APK에서만 확실히 된다. 에디터(Link)에서는 지원 안 될 수 있음 → 로그 확인
+[DefaultExecutionOrder(10000)]   // 판을 옮긴 뒤에 WindowsFollowDesktop(20000)가 창을 옮김
+public class AprilTagFollower : MonoBehaviour
+{
+    public static AprilTagFollower Instance { get; private set; }
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    static void Bootstrap()
+    {
+        if (Instance != null) return;
+        var go = new GameObject("AprilTagFollower");
+        DontDestroyOnLoad(go);
+        go.AddComponent<AprilTagFollower>();
+    }
+
+    [Header("태그")]
+    [Tooltip("따라갈 태그 ID")]
+    public int tagId = 0;
+    [Tooltip("검은 띠 안쪽 흰 네모 한 변(m). 5.4cm 태그 = 0.030, 7.2cm = 0.040")]
+    public float tagSize = 0.030f;
+    [Tooltip("움직일 모니터 판 번호")]
+    public int monitorIndex = 0;
+
+    [Header("카메라")]
+    [Tooltip("요청 해상도. 클수록 멀리서 잡히지만 느려진다")]
+    public Vector2Int resolution = new Vector2Int(640, 480);
+    [Tooltip("영상을 줄여서 찾는 배수. 1=정확·느림, 2=빠름·작은 태그 놓침")]
+    [Range(1, 4)] public int decimation = 1;
+    [Tooltip("태그 위아래가 뒤집혀 잡히면(판이 거꾸로 움직이면) 켠다")]
+    public bool flipVertical = false;
+
+    [Header("따라가기")]
+    [Tooltip("클수록 빨리 따라감, 작을수록 부드러움")]
+    [Range(1f, 60f)] public float followSpeed = 20f;
+    [Tooltip("태그를 놓쳐도 이 시간까지는 마지막 위치 유지 (그 뒤에도 판은 제자리에 남는다)")]
+    public float lostTimeout = 0.5f;
+    [Tooltip("태그 위치에 작은 큐브를 띄워 인식 확인")]
+    public bool showTagGizmo = true;
+    [Tooltip("끄면 판을 안 움직인다 (인식만)")]
+    public bool follow = true;
+
+    PassthroughCameraAccess pca;
+    TagDetector detector;
+    int detW, detH;
+    bool pending;
+    bool permissionAsked;
+
+    // 최근 관측 (월드)
+    bool hasObs;
+    Vector3 obsPos;
+    Quaternion obsRot;
+    float obsTime;
+
+    // 태그 기준 판 오프셋
+    bool hasOffset;
+    Vector3 offPos;
+    Quaternion offRot = Quaternion.identity;
+    bool recaptureRequested;
+
+    Transform plane;
+    Transform gizmo;
+    float statTime;
+    int statFrames, statHits;
+    double statMs;
+
+    void Awake()
+    {
+        if (Instance != null && Instance != this) { Destroy(gameObject); return; }
+        Instance = this;
+    }
+
+    void OnEnable() { MonitorHandCalibrator.OnQuadCalibrated += OnCalibrated; }
+    void OnDisable() { MonitorHandCalibrator.OnQuadCalibrated -= OnCalibrated; }
+
+    void OnDestroy()
+    {
+        if (Instance == this) Instance = null;
+        detector?.Dispose();
+        detector = null;
+    }
+
+    void Start()
+    {
+        hasOffset = LoadOffset();
+        RequestPermission();
+
+        if (!PassthroughCameraAccess.IsSupported)
+            Debug.LogWarning("[AprilTag] 이 환경에선 패스스루 카메라를 못 씀 (에디터/Link면 정상). APK로 실행해볼 것");
+
+        // 해상도는 켜지기 전에 정해야 하므로 꺼진 상태로 만들고 설정 후 켠다
+        var go = new GameObject("AprilTagCamera");
+        go.SetActive(false);
+        go.transform.SetParent(transform, false);
+        pca = go.AddComponent<PassthroughCameraAccess>();
+        pca.CameraPosition = PassthroughCameraAccess.CameraPositionType.Left;
+        pca.RequestedResolution = resolution;
+        go.SetActive(true);
+
+        Debug.Log($"[AprilTag] 시작 — 태그 ID {tagId}, 크기 {tagSize}m, 오프셋 {(hasOffset ? "불러옴" : "없음(판 캘리브레이션 후 자동 저장)")}");
+    }
+
+    void RequestPermission()
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        const string perm = "horizonos.permission.HEADSET_CAMERA";
+        if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(perm) && !permissionAsked)
+        {
+            permissionAsked = true;
+            UnityEngine.Android.Permission.RequestUserPermission(perm);
+        }
+#endif
+    }
+
+    void OnCalibrated(int index)
+    {
+        if (index != monitorIndex) return;
+        recaptureRequested = true;
+        Debug.Log("[AprilTag] 판을 새로 그림 → 태그가 보이면 오프셋 다시 저장");
+    }
+
+    // ── 영상 받기 → 태그 찾기 ───────────────────────────────────────────────
+    void Update()
+    {
+        if (pca == null || !pca.isActiveAndEnabled || !pca.IsPlaying) return;
+        if (pending || !pca.IsUpdatedThisFrame) return;
+
+        var tex = pca.GetTexture();
+        if (tex == null) return;
+
+        Pose camPose = pca.GetCameraPose();         // 이 영상을 찍은 순간의 카메라 위치
+        Vector2Int cur = pca.CurrentResolution;
+        var intr = pca.Intrinsics;
+        pending = true;
+
+        AsyncGPUReadback.Request(tex, 0, TextureFormat.RGBA32, req =>
+        {
+            pending = false;
+            if (req.hasError || this == null) return;
+            var data = req.GetData<Color32>();
+            Detect(data, req.width, req.height, camPose, cur, intr);
+        });
+    }
+
+    void Detect(NativeArray<Color32> data, int w, int h, Pose camPose, Vector2Int cur,
+                PassthroughCameraAccess.CameraIntrinsics intr)
+    {
+        if (data.Length < w * h) return;
+        if (detector == null || detW != w || detH != h)
+        {
+            detector?.Dispose();
+            detector = new TagDetector(w, h, Mathf.Clamp(decimation, 1, 4));
+            detW = w; detH = h;
+            Debug.Log($"[AprilTag] 영상 {w}x{h}, 감지기 준비");
+        }
+
+        // 렌즈 값(초점거리·중심점)을 지금 해상도 픽셀로 환산 (센서가 잘려서 들어올 수 있음)
+        Vector2 sensor = intr.SensorResolution;
+        Vector2 scale = (Vector2)cur / sensor;
+        scale /= Mathf.Max(scale.x, scale.y);
+        Vector2 cropSize = new Vector2(sensor.x * scale.x, sensor.y * scale.y);
+        Vector2 cropOrigin = (sensor - cropSize) * 0.5f;
+        float k = h / cropSize.y;                               // 센서 px → 영상 px
+        float fx = intr.FocalLength.x * k, fy = intr.FocalLength.y * k;
+        float cx = (intr.PrincipalPoint.x - cropOrigin.x) * k;
+        float cy = (intr.PrincipalPoint.y - cropOrigin.y) * k;
+        float fovY = 2f * Mathf.Atan(h * 0.5f / fy);            // keijiro는 세로 시야각(라디안)을 받는다
+
+        var span = data.AsReadOnlySpan().Slice(0, w * h);
+        Color32[] flipped = null;
+        if (flipVertical)
+        {
+            flipped = new Color32[w * h];
+            for (int y = 0; y < h; y++)
+                span.Slice((h - 1 - y) * w, w).CopyTo(new Span<Color32>(flipped, y * w, w));
+        }
+
+        var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (flipped != null) detector.ProcessImage(flipped, fovY, tagSize);
+        else detector.ProcessImage(span, fovY, tagSize);
+        statMs += (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        statFrames++;
+
+        foreach (var tag in detector.DetectedTags)
+        {
+            if (tag.ID != tagId) continue;
+
+            // keijiro는 중심점이 영상 정중앙이라고 가정한다 → 실제 중심점과의 차이만큼 보정
+            Vector3 p = tag.Position;
+            p.x += p.z * ((w * 0.5f - cx) / fx);
+            p.y += p.z * ((h * 0.5f - cy) / fy);
+
+            obsPos = camPose.position + camPose.rotation * p;
+            obsRot = camPose.rotation * tag.Rotation;
+            obsTime = Time.time;
+            hasObs = true;
+            statHits++;
+            break;
+        }
+    }
+
+    // ── 판 옮기기 ───────────────────────────────────────────────────────────
+    void LateUpdate()
+    {
+        StatLog();
+
+        bool fresh = hasObs && Time.time - obsTime <= lostTimeout;
+        UpdateGizmo(fresh);
+        if (!fresh) return;
+
+        if (plane == null && !FindPlane()) return;
+        if (!plane.gameObject.activeInHierarchy) return;
+
+        // 판을 그리는 중이면 손이 우선
+        var cal = MonitorHandCalibrator.Instance;
+        if (cal != null && cal.IsPlacing) return;
+
+        if (recaptureRequested || (!hasOffset && IsCalibrated()))
+        {
+            Capture();
+            recaptureRequested = false;
+            return;
+        }
+        if (!hasOffset || !follow) return;
+
+        Vector3 targetPos = obsPos + obsRot * offPos;
+        Quaternion targetRot = obsRot * offRot;
+        float a = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
+        plane.SetPositionAndRotation(Vector3.Lerp(plane.position, targetPos, a),
+                                     Quaternion.Slerp(plane.rotation, targetRot, a));
+    }
+
+    bool FindPlane()
+    {
+        foreach (var p in FindObjectsByType<MonitorPlane>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            if (p.monitorIndex == monitorIndex) { plane = p.transform; return true; }
+        return false;
+    }
+
+    bool IsCalibrated()
+    {
+        var cal = MonitorHandCalibrator.Instance;
+        if (cal == null || cal.slotKeys == null || monitorIndex >= cal.slotKeys.Length) return false;
+        string key = cal.slotKeys[monitorIndex] + "_uuid";
+        return PlayerPrefs.HasKey(key) && !string.IsNullOrEmpty(PlayerPrefs.GetString(key));
+    }
+
+    // 지금 판 위치를 태그 기준으로 저장
+    public void Capture()
+    {
+        if (plane == null && !FindPlane()) return;
+        if (!hasObs) { Debug.LogWarning("[AprilTag] 태그가 안 보여서 오프셋을 못 잡음"); return; }
+        Quaternion inv = Quaternion.Inverse(obsRot);
+        offPos = inv * (plane.position - obsPos);
+        offRot = inv * plane.rotation;
+        hasOffset = true;
+        SaveOffset();
+        Debug.Log($"[AprilTag] 오프셋 저장 — 태그에서 판 중심까지 {offPos.magnitude * 100f:F1}cm");
+    }
+
+    public void ClearOffset()
+    {
+        foreach (var s in new[] { "px", "py", "pz", "rx", "ry", "rz", "rw" }) PlayerPrefs.DeleteKey(Key + s);
+        hasOffset = false;
+        Debug.Log("[AprilTag] 오프셋 삭제");
+    }
+
+    string Key => $"apriltag_mon{monitorIndex}_id{tagId}_";
+
+    void SaveOffset()
+    {
+        PlayerPrefs.SetFloat(Key + "px", offPos.x); PlayerPrefs.SetFloat(Key + "py", offPos.y); PlayerPrefs.SetFloat(Key + "pz", offPos.z);
+        PlayerPrefs.SetFloat(Key + "rx", offRot.x); PlayerPrefs.SetFloat(Key + "ry", offRot.y);
+        PlayerPrefs.SetFloat(Key + "rz", offRot.z); PlayerPrefs.SetFloat(Key + "rw", offRot.w);
+        PlayerPrefs.Save();
+    }
+
+    bool LoadOffset()
+    {
+        if (!PlayerPrefs.HasKey(Key + "rw")) return false;
+        offPos = new Vector3(PlayerPrefs.GetFloat(Key + "px"), PlayerPrefs.GetFloat(Key + "py"), PlayerPrefs.GetFloat(Key + "pz"));
+        offRot = new Quaternion(PlayerPrefs.GetFloat(Key + "rx"), PlayerPrefs.GetFloat(Key + "ry"),
+                                PlayerPrefs.GetFloat(Key + "rz"), PlayerPrefs.GetFloat(Key + "rw")).normalized;
+        return true;
+    }
+
+    void UpdateGizmo(bool visible)
+    {
+        if (!showTagGizmo)
+        {
+            if (gizmo != null) gizmo.gameObject.SetActive(false);
+            return;
+        }
+        if (gizmo == null)
+        {
+            var g = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            g.name = "AprilTagGizmo";
+            DestroyImmediate(g.GetComponent<Collider>());   // 레이를 막지 않게
+            g.transform.SetParent(transform, false);
+            gizmo = g.transform;
+        }
+        gizmo.gameObject.SetActive(visible);
+        if (visible)
+        {
+            gizmo.SetPositionAndRotation(obsPos, obsRot);
+            gizmo.localScale = new Vector3(tagSize, tagSize, tagSize * 0.2f);
+        }
+    }
+
+    void StatLog()
+    {
+        if (Time.time - statTime < 2f) return;
+        float dt = Time.time - statTime;
+        statTime = Time.time;
+        if (pca == null) return;
+        if (!pca.IsPlaying) { Debug.Log("[AprilTag] 카메라 대기 중 (권한/지원 확인)"); return; }
+        if (statFrames > 0)
+            Debug.Log($"[AprilTag] 처리 {statFrames / dt:F0}장/초 · 평균 {statMs / statFrames:F1}ms · 태그 {tagId} 발견 {statHits}/{statFrames}");
+        statFrames = 0; statHits = 0; statMs = 0;
+    }
+
+#if UNITY_EDITOR
+    [UnityEditor.MenuItem("실험/AprilTag/오프셋 다시 잡기 (판을 먼저 맞춰둘 것)")]
+    static void MenuCapture() { if (Instance) Instance.Capture(); else Debug.LogWarning("[AprilTag] Play 중에만 됨"); }
+
+    [UnityEditor.MenuItem("실험/AprilTag/오프셋 삭제")]
+    static void MenuClear() { if (Instance) Instance.ClearOffset(); else Debug.LogWarning("[AprilTag] Play 중에만 됨"); }
+#endif
+}

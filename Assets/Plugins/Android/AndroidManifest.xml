@@ -29,5 +29,8 @@
 
   <uses-permission android:name="com.oculus.permission.USE_SCENE" />
   <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API" />
+
+  <!-- [AR LAPTOP] AprilTag 추적용 패스스루 카메라 영상 (PassthroughCameraAccess). 첫 실행 때 허용 눌러야 함 -->
+  <uses-permission android:name="horizonos.permission.HEADSET_CAMERA" />
   <horizonos:uses-horizonos-sdk horizonos:minSdkVersion="60" horizonos:targetSdkVersion="201" />
 </manifest>

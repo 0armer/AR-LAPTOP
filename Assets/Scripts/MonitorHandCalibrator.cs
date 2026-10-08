@@ -118,6 +118,11 @@ public class MonitorHandCalibrator : MonoBehaviour
 
     public static MonitorHandCalibrator Instance { get; private set; }
 
+    // [AR LAPTOP] 손으로 판을 새로 그려서 확정한 순간 (index = 몇 번 판). AprilTag가 오프셋을 다시 잡는 데 쓴다.
+    public static event System.Action<int> OnQuadCalibrated;
+    // [AR LAPTOP] 지금 판을 그리는 중인지. 그리는 동안엔 AprilTag가 판을 안 움직인다.
+    public bool IsPlacing => quadSpawned || busy;
+
     int UsableSlots => Mathf.Clamp(calibrateCount, 1, slotKeys != null ? slotKeys.Length : 1);
 
     // ---------------- 내부 상태 ----------------
@@ -688,6 +693,7 @@ public class MonitorHandCalibrator : MonoBehaviour
                              $"(그린곳={center}, 앵커={anchorGo.transform.position})");
 
         AttachQuad(index, anchorGo.transform, w, h, center, rot);
+        OnQuadCalibrated?.Invoke(index);
 
         targetIndex = NextUncalibrated(index + 1);
         busy = false;
