@@ -85,6 +85,19 @@ public class AprilTagFollower : MonoBehaviour
     public bool HasEverSeen { get; private set; }
 
     PassthroughCameraAccess pca;
+
+    [Header("깊이 센서로 거리 재기")]
+    [Tooltip("켜면 태그까지 거리를 퀘스트 깊이 센서로 직접 잰다 → 태그 크기값이 틀려도 판이 종이 면에 붙는다. " +
+             "못 재면 크기값으로 계산한 거리를 쓴다")]
+    public bool useDepthSensor = true;
+    [Tooltip("깊이 보정 비율을 얼마나 부드럽게 바꿀지 (0~1, 작을수록 부드럽고 느림)")]
+    [Range(0.02f, 1f)] public float depthSmoothing = 0.25f;
+    [Tooltip("센서로 잰 거리가 크기 기준 거리의 이 배수 범위를 벗어나면 (손에 가려짐 등) 무시")]
+    public Vector2 depthAcceptRatio = new Vector2(0.5f, 1.8f);
+    EnvironmentRaycastManager envRay;
+    float depthRatio = 1f;          // 센서 거리 / 크기 기준 거리 (부드럽게 갱신)
+    bool hasDepthRatio;
+    int statDepthHits;
     TagDetector detector;
     int detW, detH;
     bool pending;
@@ -132,6 +145,17 @@ public class AprilTagFollower : MonoBehaviour
         LoadLayout();
         RequestPermission();
 
+        if (useDepthSensor)
+        {
+            if (EnvironmentRaycastManager.IsSupported)
+            {
+                envRay = FindAnyObjectByType<EnvironmentRaycastManager>();
+                if (envRay == null) envRay = gameObject.AddComponent<EnvironmentRaycastManager>();
+                Debug.Log("[AprilTag] 깊이 센서로 거리 재기 켬");
+            }
+            else Debug.LogWarning("[AprilTag] 깊이 센서 미지원 → 태그 크기값으로 거리 계산");
+        }
+
         // [AR LAPTOP] 고정 배치면 손으로 판 그리기는 안 쓴다 (주먹 쥐어도 배치 모드가 안 뜨게)
         if (fixedLayout && MonitorHandCalibrator.Instance != null)
         {
@@ -158,10 +182,14 @@ public class AprilTagFollower : MonoBehaviour
     {
 #if UNITY_ANDROID && !UNITY_EDITOR
         const string perm = "horizonos.permission.HEADSET_CAMERA";
-        if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(perm) && !permissionAsked)
+        const string scene = "com.oculus.permission.USE_SCENE";   // 깊이 센서(공간 데이터)
+        if (!permissionAsked)
         {
             permissionAsked = true;
-            UnityEngine.Android.Permission.RequestUserPermission(perm);
+            var need = new System.Collections.Generic.List<string>();
+            if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(perm)) need.Add(perm);
+            if (useDepthSensor && !UnityEngine.Android.Permission.HasUserAuthorizedPermission(scene)) need.Add(scene);
+            if (need.Count > 0) UnityEngine.Android.Permission.RequestUserPermissions(need.ToArray());
         }
 #endif
     }
@@ -243,6 +271,26 @@ public class AprilTagFollower : MonoBehaviour
             Vector3 p = tag.Position;
             p.x += p.z * ((w * 0.5f - cx) / fx);
             p.y += p.z * ((h * 0.5f - cy) / fy);
+
+            // 깊이 센서: 카메라 → 태그 중심 방향으로 레이를 쏴서 실제 표면까지 거리를 잰다.
+            // 방향(영상 속 위치)은 그대로 두고 거리만 바꾸므로, 태그 크기값이 틀려도 판이 종이 면에 붙는다.
+            if (envRay != null && envRay.isActiveAndEnabled)
+            {
+                float estDist = p.magnitude;
+                Vector3 dirWorld = camPose.rotation * (p / Mathf.Max(estDist, 1e-4f));
+                if (envRay.Raycast(new Ray(camPose.position, dirWorld), out var eh, 5f))
+                {
+                    float sensed = Vector3.Distance(camPose.position, eh.point);
+                    float r = sensed / Mathf.Max(estDist, 1e-4f);
+                    if (r >= depthAcceptRatio.x && r <= depthAcceptRatio.y)
+                    {
+                        depthRatio = hasDepthRatio ? Mathf.Lerp(depthRatio, r, depthSmoothing) : r;
+                        hasDepthRatio = true;
+                        statDepthHits++;
+                    }
+                }
+            }
+            if (useDepthSensor && hasDepthRatio) p *= depthRatio;   // 못 잰 프레임은 마지막 비율 유지
 
             Vector3 newPos = camPose.position + camPose.rotation * p;
             Quaternion newRot = camPose.rotation * tag.Rotation;
@@ -491,8 +539,9 @@ public class AprilTagFollower : MonoBehaviour
         if (pca == null) return;
         if (!pca.IsPlaying) { Debug.Log("[AprilTag] 카메라 대기 중 (권한/지원 확인)"); return; }
         if (statFrames > 0)
-            Debug.Log($"[AprilTag] 처리 {statFrames / dt:F0}장/초 · 평균 {statMs / statFrames:F1}ms · 태그 {tagId} 발견 {statHits}/{statFrames}");
-        statFrames = 0; statHits = 0; statMs = 0;
+            Debug.Log($"[AprilTag] 처리 {statFrames / dt:F0}장/초 · 평균 {statMs / statFrames:F1}ms · 태그 {tagId} 발견 {statHits}/{statFrames}"
+                      + (useDepthSensor ? $" · 깊이센서 {statDepthHits}회 · 보정 x{depthRatio:F2} (실제 태그 흰네모 약 {tagSize * depthRatio * 100f:F1}cm)" : ""));
+        statFrames = 0; statHits = 0; statMs = 0; statDepthHits = 0;
     }
 
 #if UNITY_EDITOR
