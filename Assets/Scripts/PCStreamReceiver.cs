@@ -204,8 +204,17 @@ public class PCStreamReceiver : MonoBehaviour
         while (incomingStudy.TryDequeue(out string studyMsg))
         {
             var parts = studyMsg.Split(',');
-            if (parts.Length >= 2 && parts[1].Trim() == "clear" && ConditionManager.Instance != null)
+            if (parts.Length < 2) continue;
+            string cmd = parts[1].Trim();
+            if (cmd == "clear" && ConditionManager.Instance != null)
                 ConditionManager.Instance.ClearAllWindows();
+            else if ((cmd == "off" || cmd == "size") && parts.Length >= 4 && AprilTagFollower.Instance != null
+                     && float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float a)
+                     && float.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float b))
+            {
+                if (cmd == "off") AprilTagFollower.Instance.SetCornerOffsetCm(a, b);
+                else AprilTagFollower.Instance.SetSizeCm(a, b);
+            }
         }
 
         byte[] latest = null;

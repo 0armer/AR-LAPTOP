@@ -1286,6 +1286,8 @@ class Program
         Console.WriteLine("  │  판 위치는 헤드셋이 AprilTag(ID 0)로 정한다      │");
         Console.WriteLine("  ├───────────────────────────────────────────────┤");
         Console.WriteLine("  │  x        공중의 창 전부 되돌리기               │");
+        Console.WriteLine("  │  off -2 -2   판 모서리 위치 (오른쪽/아래 cm)     │");
+        Console.WriteLine("  │  size 29.7 21  판 크기 (가로/세로 cm)            │");
         Console.WriteLine("  │  cap 1280 창 캡처 해상도 낮추기 (0 = 원본)       │");
         Console.WriteLine("  │  q 80     JPEG 품질                             │");
         Console.WriteLine("  │  Ctrl+C   종료 — 꺼낸 창 원래대로 복원          │");
@@ -1326,6 +1328,24 @@ class Program
                     await SendToHeadset("study,clear,");
                     Console.WriteLine("[콘솔] 공중의 창을 데스크탑으로 되돌림");
                     break;
+                // off -2 -2   → 판의 왼쪽 위 모서리를 태그 모서리에서 오른쪽 -2cm, 아래 -2cm (= 왼쪽 위로 2cm)
+                // size 29.7 21 → 판 크기 (cm)
+                case "off":
+                case "size":
+                {
+                    var a = arg.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (a.Length < 2 || !float.TryParse(a[0], NumberStyles.Float, CultureInfo.InvariantCulture, out float f1)
+                                     || !float.TryParse(a[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float f2))
+                    {
+                        Console.WriteLine(cmd == "off" ? "[판] 사용법: off -2 -2   (오른쪽 cm, 아래 cm — 음수면 왼쪽/위)"
+                                                       : "[판] 사용법: size 29.7 21   (가로 cm, 세로 cm)");
+                        break;
+                    }
+                    await SendToHeadset($"study,{cmd},{f1.ToString(CultureInfo.InvariantCulture)},{f2.ToString(CultureInfo.InvariantCulture)}");
+                    Console.WriteLine(cmd == "off" ? $"[판] 모서리 위치 → 오른쪽 {f1}cm, 아래 {f2}cm (헤드셋에 저장됨)"
+                                                   : $"[판] 크기 → {f1} x {f2} cm (헤드셋에 저장됨)");
+                    break;
+                }
                 case "cap":
                     if (arg.Length > 0 && int.TryParse(arg, out int px) && px >= 0) MaxCaptureSide = px;
                     Console.WriteLine($"[캡처] 최대 긴변 = {(MaxCaptureSide <= 0 ? "원본 그대로" : MaxCaptureSide + "px")} · 품질 = {JpegQualityVar}");

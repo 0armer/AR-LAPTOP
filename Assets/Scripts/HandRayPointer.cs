@@ -234,7 +234,10 @@ public class HandRayPointer : MonoBehaviour
                                    && hand.HandConfidence == OVRHand.TrackingConfidence.High;
     public Vector3 CurrentHandPos { get; private set; }
 
-    void OnEnable() { if (!All.Contains(this)) All.Add(this); }
+    void OnEnable()
+    {
+        if (!All.Contains(this)) All.Add(this);
+    }
     void OnDisable() { All.Remove(this); }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -248,7 +251,7 @@ public class HandRayPointer : MonoBehaviour
         holdDistance      = 0.55f;      // 아무것도 안 겨눴을 때 손 앞 거리
         holdFrontGap      = 0.40f;      // 겨눈 지점에서 내 쪽으로 당기는 양
         holdDistanceScale = 0.7f;       // 최종 거리 배율
-        minDistance       = 0.2f;       // 너무 가까워지는 것만 막는 하한
+        minDistance       = 0.02f;      // [AR LAPTOP] 가까이서 잡아도 그 거리 그대로 (예전 0.2 → 가까우면 20cm로 밀려남)
         holdInFrontOfHit  = true;       // 판보다 앞에 들기
         keepQuadUpright   = false;      // AR에서는 위아래 기울기가 살아 있어야 한다
         spawnAlignToMonitor = false;    // 예전 동작(손이 향한 방향 그대로). true면 판과 나란히

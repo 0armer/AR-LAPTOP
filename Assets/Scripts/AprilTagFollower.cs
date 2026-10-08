@@ -73,7 +73,7 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("판 세로(m). A4 세로 = 0.210")]
     public float quadHeight = 0.210f;
     [Tooltip("태그 바깥 왼쪽 위 꼭짓점에서 판의 왼쪽 위 꼭짓점까지 (오른쪽+, 아래+) m. 0이면 딱 맞춤")]
-    public Vector2 cornerOffset = new Vector2(-0.005f, -0.005f);   // 태그보다 5mm 더 바깥에서 시작 → 태그가 확실히 가려짐
+    public Vector2 cornerOffset = new Vector2(-0.02f, -0.02f);   // 태그보다 2cm 더 바깥에서 시작 → 태그가 판 안쪽에 들어감
     [Tooltip("판을 태그 면에서 보는 쪽으로 띄우는 거리(m)")]
     public float liftFromSurface = 0.002f;
     [Tooltip("화면이 좌우로 뒤집혀 보이면 (0,180,0)")]
@@ -127,6 +127,7 @@ public class AprilTagFollower : MonoBehaviour
     void Start()
     {
         hasOffset = LoadOffset();
+        LoadLayout();
         RequestPermission();
 
         // [AR LAPTOP] 고정 배치면 손으로 판 그리기는 안 쓴다 (주먹 쥐어도 배치 모드가 안 뜨게)
@@ -340,6 +341,39 @@ public class AprilTagFollower : MonoBehaviour
         float a = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
         plane.SetPositionAndRotation(Vector3.Lerp(plane.position, targetPos, a),
                                      Quaternion.Slerp(plane.rotation, targetRot, a));
+    }
+
+    // ── 판 위치·크기 조절 (PC 콘솔: off x y / size w h, 단위 cm) ──────────────
+    const string LayoutKey = "aprilTag_layout_";
+
+    public void SetCornerOffsetCm(float rightCm, float downCm)
+    {
+        cornerOffset = new Vector2(rightCm / 100f, downCm / 100f);
+        PlayerPrefs.SetFloat(LayoutKey + "ox", cornerOffset.x);
+        PlayerPrefs.SetFloat(LayoutKey + "oy", cornerOffset.y);
+        PlayerPrefs.Save();
+        Debug.Log($"[AprilTag] 판 모서리 = 태그 모서리에서 오른쪽 {rightCm}cm, 아래 {downCm}cm");
+    }
+
+    public void SetSizeCm(float wCm, float hCm)
+    {
+        quadWidth = Mathf.Max(0.05f, wCm / 100f);
+        quadHeight = Mathf.Max(0.05f, hCm / 100f);
+        PlayerPrefs.SetFloat(LayoutKey + "w", quadWidth);
+        PlayerPrefs.SetFloat(LayoutKey + "h", quadHeight);
+        PlayerPrefs.Save();
+        Debug.Log($"[AprilTag] 판 크기 = {wCm} x {hCm} cm");
+    }
+
+    void LoadLayout()
+    {
+        if (PlayerPrefs.HasKey(LayoutKey + "ox"))
+            cornerOffset = new Vector2(PlayerPrefs.GetFloat(LayoutKey + "ox"), PlayerPrefs.GetFloat(LayoutKey + "oy"));
+        if (PlayerPrefs.HasKey(LayoutKey + "w"))
+        {
+            quadWidth = PlayerPrefs.GetFloat(LayoutKey + "w");
+            quadHeight = PlayerPrefs.GetFloat(LayoutKey + "h");
+        }
     }
 
     bool FindPlane()
