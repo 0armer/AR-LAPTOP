@@ -76,6 +76,8 @@ public class AprilTagFollower : MonoBehaviour
     public Vector2 cornerOffset = new Vector2(-0.02f, -0.02f);   // 태그보다 2cm 더 바깥에서 시작 → 태그가 판 안쪽에 들어감
     [Tooltip("판을 태그 면에서 보는 쪽으로 띄우는 거리(m)")]
     public float liftFromSurface = 0.002f;
+    [Tooltip("판을 보는 사람 쪽으로 당기는 거리(m). 판이 태그보다 뒤에 있어 보이면 +, 앞에 떠 보이면 -")]
+    public float depthPull = 0f;
     [Tooltip("화면이 좌우로 뒤집혀 보이면 (0,180,0)")]
     public Vector3 rotationOffset = Vector3.zero;
 
@@ -325,6 +327,14 @@ public class AprilTagFollower : MonoBehaviour
         Vector3 targetPos = pPos + pRot * local;
         Quaternion targetRot = pRot * Quaternion.Euler(rotationOffset);
 
+        // 깊이 보정: 눈 → 판 방향 선을 따라 당긴다 (눈에서 본 위치는 그대로, 거리만 바뀜)
+        var cam = Camera.main;
+        if (cam != null && Mathf.Abs(depthPull) > 1e-5f)
+        {
+            Vector3 toEye = cam.transform.position - targetPos;
+            if (toEye.sqrMagnitude > 1e-6f) targetPos += toEye.normalized * depthPull;
+        }
+
         // 앵커 밑에 붙어 있으면 앵커가 움직일 때 같이 흔들리므로 떼어낸다 (크기도 월드 기준으로 맞추기 위해)
         if (plane.parent != null) plane.SetParent(null, true);
         var s = plane.localScale;
@@ -355,6 +365,23 @@ public class AprilTagFollower : MonoBehaviour
         Debug.Log($"[AprilTag] 판 모서리 = 태그 모서리에서 오른쪽 {rightCm}cm, 아래 {downCm}cm");
     }
 
+    public void SetDepthCm(float cm)
+    {
+        depthPull = cm / 100f;
+        PlayerPrefs.SetFloat(LayoutKey + "dp", depthPull);
+        PlayerPrefs.Save();
+        Debug.Log($"[AprilTag] 판을 {cm}cm 앞으로 당김");
+    }
+
+    // 태그 흰 네모 한 변(cm). 인쇄 크기와 다르면 거리가 틀어져 판이 앞/뒤로 밀린다
+    public void SetTagCm(float innerCm)
+    {
+        tagSize = Mathf.Max(0.005f, innerCm / 100f);
+        PlayerPrefs.SetFloat(LayoutKey + "ts", tagSize);
+        PlayerPrefs.Save();
+        Debug.Log($"[AprilTag] 태그 크기값 = {innerCm}cm (흰 네모 한 변)");
+    }
+
     public void SetSizeCm(float wCm, float hCm)
     {
         quadWidth = Mathf.Max(0.05f, wCm / 100f);
@@ -369,6 +396,8 @@ public class AprilTagFollower : MonoBehaviour
     {
         if (PlayerPrefs.HasKey(LayoutKey + "ox"))
             cornerOffset = new Vector2(PlayerPrefs.GetFloat(LayoutKey + "ox"), PlayerPrefs.GetFloat(LayoutKey + "oy"));
+        if (PlayerPrefs.HasKey(LayoutKey + "dp")) depthPull = PlayerPrefs.GetFloat(LayoutKey + "dp");
+        if (PlayerPrefs.HasKey(LayoutKey + "ts")) tagSize = PlayerPrefs.GetFloat(LayoutKey + "ts");
         if (PlayerPrefs.HasKey(LayoutKey + "w"))
         {
             quadWidth = PlayerPrefs.GetFloat(LayoutKey + "w");

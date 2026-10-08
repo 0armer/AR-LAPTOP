@@ -1288,6 +1288,8 @@ class Program
         Console.WriteLine("  │  x        공중의 창 전부 되돌리기               │");
         Console.WriteLine("  │  off -2 -2   판 모서리 위치 (오른쪽/아래 cm)     │");
         Console.WriteLine("  │  size 29.7 21  판 크기 (가로/세로 cm)            │");
+        Console.WriteLine("  │  depth 3     판을 눈 쪽으로 cm (뒤에 있어 보이면) │");
+        Console.WriteLine("  │  tag 3       태그 흰 네모 한 변 cm               │");
         Console.WriteLine("  │  cap 1280 창 캡처 해상도 낮추기 (0 = 원본)       │");
         Console.WriteLine("  │  q 80     JPEG 품질                             │");
         Console.WriteLine("  │  Ctrl+C   종료 — 꺼낸 창 원래대로 복원          │");
@@ -1344,6 +1346,22 @@ class Program
                     await SendToHeadset($"study,{cmd},{f1.ToString(CultureInfo.InvariantCulture)},{f2.ToString(CultureInfo.InvariantCulture)}");
                     Console.WriteLine(cmd == "off" ? $"[판] 모서리 위치 → 오른쪽 {f1}cm, 아래 {f2}cm (헤드셋에 저장됨)"
                                                    : $"[판] 크기 → {f1} x {f2} cm (헤드셋에 저장됨)");
+                    break;
+                }
+                // depth 3  → 판을 눈 쪽으로 3cm 당김 (판이 태그 뒤에 있어 보일 때)
+                // tag 3    → 태그 흰 네모 한 변 3cm (인쇄 크기와 맞춰야 거리가 맞음)
+                case "depth":
+                case "tag":
+                {
+                    if (!float.TryParse(arg.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float v1))
+                    {
+                        Console.WriteLine(cmd == "depth" ? "[판] 사용법: depth 3   (판을 눈 쪽으로 cm, 음수면 뒤로)"
+                                                         : "[판] 사용법: tag 3   (태그 검은 띠 안쪽 흰 네모 한 변 cm)");
+                        break;
+                    }
+                    await SendToHeadset($"study,{cmd},{v1.ToString(CultureInfo.InvariantCulture)}");
+                    Console.WriteLine(cmd == "depth" ? $"[판] 눈 쪽으로 {v1}cm 당김 (헤드셋에 저장됨)"
+                                                     : $"[판] 태그 크기값 {v1}cm (헤드셋에 저장됨)");
                     break;
                 }
                 case "cap":

@@ -208,6 +208,12 @@ public class PCStreamReceiver : MonoBehaviour
             string cmd = parts[1].Trim();
             if (cmd == "clear" && ConditionManager.Instance != null)
                 ConditionManager.Instance.ClearAllWindows();
+            else if ((cmd == "depth" || cmd == "tag") && parts.Length >= 3 && AprilTagFollower.Instance != null
+                     && float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float one))
+            {
+                if (cmd == "depth") AprilTagFollower.Instance.SetDepthCm(one);
+                else AprilTagFollower.Instance.SetTagCm(one);
+            }
             else if ((cmd == "off" || cmd == "size") && parts.Length >= 4 && AprilTagFollower.Instance != null
                      && float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float a)
                      && float.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float b))
