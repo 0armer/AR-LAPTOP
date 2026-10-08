@@ -116,6 +116,8 @@ class Program
             return true;
         };
         EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, cb, IntPtr.Zero);
+        // [AR LAPTOP] 주 모니터 하나만 쓴다 (보조 모니터가 꽂혀 있어도 무시)
+        if (monitors.Count > 1) monitors.RemoveRange(1, monitors.Count - 1);
         if (monitors.Count == 0)
             monitors.Add(new Mon { X = 0, Y = 0, W = screenWidth, H = screenHeight });
     }
@@ -614,9 +616,21 @@ class Program
     {
         ulong lastHash = 0;
         int same = 0;
+        int sent = 0;
+        long logTick = Environment.TickCount64;
+        Console.WriteLine($"[데스크탑 화면] 주 모니터 {(monitors.Count > 0 ? monitors[0].W + "x" + monitors[0].H : "?")} 를 ID -1 로 보냄");
         while (true)
         {
             long t0 = Environment.TickCount64;
+            if (t0 - logTick >= 3000)
+            {
+                int clients;
+                lock (windowClients) clients = windowClients.Count;
+                Console.WriteLine($"[데스크탑 화면] 3초간 {sent}장 보냄 · 받는곳 {clients}곳"
+                                  + (clients == 0 ? "  ← 헤드셋이 8081에 안 붙음 (흰 판 원인). USB면 adb reverse, 무선이면 Server Host IP 확인" : ""));
+                sent = 0;
+                logTick = t0;
+            }
             if (DesktopStreamOn)
             {
                 try
@@ -667,6 +681,7 @@ class Program
                         BitConverter.GetBytes(DesktopFrameId).CopyTo(payload, 0);
                         jpeg.CopyTo(payload, 8);
                         await BroadcastFrame(payload);
+                        sent++;
                     }
                 }
                 catch (Exception ex) { Console.WriteLine($"[데스크탑 화면] 캡처 오류: {ex.Message}"); }
@@ -1431,26 +1446,16 @@ class Program
     static void PrintRecHelp()
     {
         Console.WriteLine();
-        Console.WriteLine("  ┌─ 실험 진행 ───────────────────────────────────┐");
-        Console.WriteLine("  │  p0       참가자 P0  (p07, p P07 도 됨)        │");
-        Console.WriteLine("  │  c1~c4    실험 조건 전환                       │");
-        Console.WriteLine("  │  t1       태스크 1 시작   (t2, t3 …)          │");
-        Console.WriteLine("  │  p0 c1 t1 한 줄에 붙여 쳐도 됨                 │");
-        Console.WriteLine("  │  Ctrl+C   종료 — 마감 + 저장 + 창 복원         │");
-        Console.WriteLine("  ├─ 실험 조건 ───────────────────────────────────┤");
-        Console.WriteLine("  │  c1  모니터 1대 · 선 없음                      │");
-        Console.WriteLine("  │  c2  모니터 1대 · 선 있음                      │");
-        Console.WriteLine("  │  c3  모니터 2대 · 선 없음                      │");
-        Console.WriteLine("  │  c4  모니터 2대 · 선 있음                      │");
-        Console.WriteLine("  ├─ 모니터 배치 ─────────────────────────────────┤");
-        Console.WriteLine("  │  cal 1   모니터 1대를 처음부터 다시 배치       │");
-        Console.WriteLine("  │  cal 2   모니터 2대를 처음부터 다시 배치       │");
-        Console.WriteLine("  │  cal     개수 그대로 다시 배치                 │");
+        Console.WriteLine("  ┌─ AR LAPTOP ───────────────────────────────────┐");
+        Console.WriteLine("  │  주 모니터 1개를 통째로 복제해서 판에 보낸다     │");
+        Console.WriteLine("  │  판 위치는 헤드셋이 AprilTag(ID 0)로 정한다      │");
         Console.WriteLine("  ├───────────────────────────────────────────────┤");
-        Console.WriteLine("  │  다음 태스크를 시작하면 앞 태스크는 자동 마감   │");
-        Console.WriteLine("  │  x  창 전부 되돌리기   m 라벨  영상 동기화 표시 │");
+        Console.WriteLine("  │  p0       참가자 P0  (기록 파일 이름용)          │");
+        Console.WriteLine("  │  t1       태스크 1 시작   (t2, t3 …)            │");
+        Console.WriteLine("  │  x        공중의 창 전부 되돌리기               │");
+        Console.WriteLine("  │  m 라벨    영상 동기화 표시                     │");
+        Console.WriteLine("  │  Ctrl+C   종료 — 저장 + 창 복원                 │");
         Console.WriteLine("  └───────────────────────────────────────────────┘");
-        Console.WriteLine("  조건을 바꾸면 공중의 창이 정리되고 새 파일로 저장된다.");
         Console.WriteLine();
     }
 
@@ -1613,38 +1618,10 @@ class Program
                     Console.WriteLine($"[기록] 태스크 종료: {recTask}");
                     recTask = "none";
                     break;
-                // c1 ~ c4  →  실험 조건 번호로 한 번에 전환
-                case "c":
-                {
-                    if (!CondFromNumber(arg, out int cm, out bool cl))
-                    {
-                        Console.WriteLine("[기록] 사용법: c1 / c2 / c3 / c4");
-                        Console.WriteLine("        c1 모니터1·선없음   c2 모니터1·선있음");
-                        Console.WriteLine("        c3 모니터2·선없음   c4 모니터2·선있음");
-                        break;
-                    }
-                    await RecBroadcast("study,cond," + cm + " " + (cl ? "on" : "off"));
-                    recCond = "M" + cm + "L" + (cl ? "1" : "0");
-                    recTask = "none";
-                    Console.WriteLine($"[기록] 조건 {arg} — 모니터 {cm}대 · 선 {(cl ? "있음" : "없음")}  ({recCond})");
-                    if (!AnyControlClient())
-                        Console.WriteLine("[기록] !! 헤드셋이 아직 연결 안 됨 — 붙은 뒤에 다시 치세요");
+                // [AR LAPTOP] 실험 조건(c1~c4·cond)은 없음. 모니터 1대·선 없음 고정
+                case "c": case "cond":
+                    Console.WriteLine("[AR LAPTOP] 조건 전환 없음 — 데스크탑 1개 복제만 한다");
                     break;
-                }
-
-                // cond 2 on   /   cond 1 off   (조건을 직접 지정하는 긴 형태)
-                case "cond":
-                {
-                    var a = arg.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                    if (a.Length == 0) { Console.WriteLine("[기록] 사용법: cond <1|2> <on|off>"); break; }
-                    string mons = a[0];
-                    string lk = a.Length >= 2 ? a[1].ToLowerInvariant() : "on";
-                    await RecBroadcast("study,cond," + mons + " " + lk);
-                    recCond = "M" + mons + "L" + ((lk == "on" || lk == "1" || lk == "true") ? "1" : "0");
-                    recTask = "none";
-                    Console.WriteLine($"[기록] 조건 전환: 모니터 {mons}대 · 선 {(lk == "on" ? "있음" : "없음")}  ({recCond})");
-                    break;
-                }
 
                 case "clear":
                     await RecBroadcast("study,clear,");
@@ -1687,19 +1664,10 @@ class Program
                     break;
                 }
 
-                // cal      → 저장된 모니터 배치를 지우고 처음부터 다시
-                // cal 1    → 1대만 배치     cal 2 → 2대 배치
+                // [AR LAPTOP] 손 배치 없음. 판은 AprilTag가 붙인다
                 case "cal":
-                {
-                    string n = arg.Trim();
-                    await RecBroadcast("study,cal," + n);
-                    if (n.Length > 0) Console.WriteLine($"[배치] 모니터 {n}대를 처음부터 다시 배치합니다");
-                    else Console.WriteLine("[배치] 모니터 배치를 처음부터 다시 합니다");
-                    Console.WriteLine("       헤드셋: 왼주먹 쥠 → 오른손 핀치로 왼쪽 위 → 손 빼서 크기 → 기울여 각도 → 왼주먹 폄");
-                    if (!AnyControlClient())
-                        Console.WriteLine("[배치] !! 헤드셋이 아직 연결 안 됨 — 붙은 뒤에 다시 치세요");
+                    Console.WriteLine("[AR LAPTOP] 손 배치 안 씀 — 판은 AprilTag(ID 0)를 보면 자동으로 붙는다");
                     break;
-                }
 
                 case "mark": case "m":
                     await RecBroadcast("study,mark," + arg);

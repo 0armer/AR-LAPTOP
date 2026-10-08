@@ -48,13 +48,15 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("요청 해상도. 클수록 멀리서 잡히지만 느려진다")]
     public Vector2Int resolution = new Vector2Int(640, 480);
     [Tooltip("영상을 줄여서 찾는 배수. 1=정확·느림, 2=빠름·작은 태그 놓침")]
-    [Range(1, 4)] public int decimation = 1;
+    [Range(1, 4)] public int decimation = 2;
     [Tooltip("태그 위아래가 뒤집혀 잡히면(판이 거꾸로 움직이면) 켠다")]
     public bool flipVertical = false;
 
     [Header("따라가기")]
-    [Tooltip("클수록 빨리 따라감, 작을수록 부드러움")]
-    [Range(1f, 60f)] public float followSpeed = 20f;
+    [Tooltip("0 = 새 위치로 바로 점프(빠릿함). 값을 주면 그만큼 부드럽게 따라감(클수록 빠름, 예: 30)")]
+    [Range(0f, 60f)] public float followSpeed = 0f;
+    [Tooltip("물체가 움직일 때 카메라 처리 지연(약 0.05~0.1초)만큼 앞으로 예측해서 붙인다. 0 = 끔. 떨리면 0으로")]
+    [Range(0f, 0.15f)] public float predictSeconds = 0.06f;
     [Tooltip("태그를 놓쳐도 이 시간까지는 마지막 위치 유지 (그 뒤에도 판은 제자리에 남는다)")]
     public float lostTimeout = 0.5f;
     [Tooltip("태그 위치에 작은 큐브를 띄워 인식 확인")]
@@ -71,7 +73,7 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("판 세로(m). A4 세로 = 0.210")]
     public float quadHeight = 0.210f;
     [Tooltip("태그 바깥 왼쪽 위 꼭짓점에서 판의 왼쪽 위 꼭짓점까지 (오른쪽+, 아래+) m. 0이면 딱 맞춤")]
-    public Vector2 cornerOffset = Vector2.zero;
+    public Vector2 cornerOffset = new Vector2(-0.005f, -0.005f);   // 태그보다 5mm 더 바깥에서 시작 → 태그가 확실히 가려짐
     [Tooltip("판을 태그 면에서 보는 쪽으로 띄우는 거리(m)")]
     public float liftFromSurface = 0.002f;
     [Tooltip("화면이 좌우로 뒤집혀 보이면 (0,180,0)")]
@@ -91,6 +93,8 @@ public class AprilTagFollower : MonoBehaviour
     Vector3 obsPos;
     Quaternion obsRot;
     float obsTime;
+    Vector3 velPos;          // m/s
+    Vector3 velRot;          // 축 × 도/초
 
     // 태그 기준 판 오프셋
     bool hasOffset;
@@ -124,6 +128,13 @@ public class AprilTagFollower : MonoBehaviour
     {
         hasOffset = LoadOffset();
         RequestPermission();
+
+        // [AR LAPTOP] 고정 배치면 손으로 판 그리기는 안 쓴다 (주먹 쥐어도 배치 모드가 안 뜨게)
+        if (fixedLayout && MonitorHandCalibrator.Instance != null)
+        {
+            MonitorHandCalibrator.Instance.enabled = false;
+            Debug.Log("[AprilTag] 고정 배치 모드 → 손 캘리브레이션 끔");
+        }
 
         if (!PassthroughCameraAccess.IsSupported)
             Debug.LogWarning("[AprilTag] 이 환경에선 패스스루 카메라를 못 씀 (에디터/Link면 정상). APK로 실행해볼 것");
@@ -230,8 +241,22 @@ public class AprilTagFollower : MonoBehaviour
             p.x += p.z * ((w * 0.5f - cx) / fx);
             p.y += p.z * ((h * 0.5f - cy) / fy);
 
-            obsPos = camPose.position + camPose.rotation * p;
-            obsRot = camPose.rotation * tag.Rotation;
+            Vector3 newPos = camPose.position + camPose.rotation * p;
+            Quaternion newRot = camPose.rotation * tag.Rotation;
+            float dtObs = Time.time - obsTime;
+            if (hasObs && dtObs > 0.005f && dtObs < 0.3f)
+            {
+                // 이동 속도(m/s)와 회전 속도를 살짝 평균 내서 기억 → 예측에 씀
+                Vector3 v = (newPos - obsPos) / dtObs;
+                velPos = Vector3.Lerp(velPos, v, 0.5f);
+                (newRot * Quaternion.Inverse(obsRot)).ToAngleAxis(out float ang, out Vector3 axis);
+                if (ang > 180f) ang -= 360f;
+                Vector3 w = float.IsFinite(axis.x) ? axis * (ang / dtObs) : Vector3.zero;
+                velRot = Vector3.Lerp(velRot, w, 0.5f);
+            }
+            else { velPos = Vector3.zero; velRot = Vector3.zero; }
+            obsPos = newPos;
+            obsRot = newRot;
             obsTime = Time.time;
             hasObs = true;
             statHits++;
@@ -289,8 +314,15 @@ public class AprilTagFollower : MonoBehaviour
             -half + cornerOffset.x + quadWidth * 0.5f,
              half - cornerOffset.y - quadHeight * 0.5f,
             -liftFromSurface);
-        Vector3 targetPos = obsPos + obsRot * local;
-        Quaternion targetRot = obsRot * Quaternion.Euler(rotationOffset);
+        // 예측: 마지막 관측 이후 흐른 시간 + 처리 지연만큼 앞으로
+        float ahead = predictSeconds > 0f ? Mathf.Min(Time.time - obsTime + predictSeconds, 0.2f) : 0f;
+        Vector3 pPos = obsPos + velPos * ahead;
+        Quaternion pRot = obsRot;
+        if (ahead > 0f && velRot.sqrMagnitude > 1e-6f)
+            pRot = Quaternion.AngleAxis(velRot.magnitude * ahead, velRot.normalized) * obsRot;
+
+        Vector3 targetPos = pPos + pRot * local;
+        Quaternion targetRot = pRot * Quaternion.Euler(rotationOffset);
 
         // 앵커 밑에 붙어 있으면 앵커가 움직일 때 같이 흔들리므로 떼어낸다 (크기도 월드 기준으로 맞추기 위해)
         if (plane.parent != null) plane.SetParent(null, true);
@@ -304,6 +336,7 @@ public class AprilTagFollower : MonoBehaviour
             Debug.Log("[AprilTag] 태그 발견 → 판을 태그 오른쪽 아래로 붙임 (A4 크기)");
             return;
         }
+        if (followSpeed <= 0f) { plane.SetPositionAndRotation(targetPos, targetRot); return; }
         float a = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
         plane.SetPositionAndRotation(Vector3.Lerp(plane.position, targetPos, a),
                                      Quaternion.Slerp(plane.rotation, targetRot, a));
@@ -381,8 +414,9 @@ public class AprilTagFollower : MonoBehaviour
         gizmo.gameObject.SetActive(visible);
         if (visible)
         {
+            // 태그 전체(바깥 테두리 = 1.8 × tagSize) 크기의 얇은 판 → 실제 태그와 겹치면 인식 위치가 맞는 것
             gizmo.SetPositionAndRotation(obsPos, obsRot);
-            gizmo.localScale = new Vector3(tagSize, tagSize, tagSize * 0.2f);
+            gizmo.localScale = new Vector3(1.8f * tagSize, 1.8f * tagSize, 0.002f);
         }
     }
 

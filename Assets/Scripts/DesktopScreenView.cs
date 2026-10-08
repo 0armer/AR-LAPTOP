@@ -64,7 +64,22 @@ public class DesktopScreenView : MonoBehaviour
             WindowCaptureHub.Instance.Register(DesktopFrameId, screenRenderer);
             registered = true;
         }
+
+        // 화면 그림이 아직 한 장도 안 왔으면(=흰 판) 이유를 5초마다 알려준다
+        if (registered && Time.time - lastDiag > 5f)
+        {
+            lastDiag = Time.time;
+            var t = screenRenderer.material.mainTexture;
+            if (t == null || t.width <= 2)
+            {
+                var hub = WindowCaptureHub.Instance;
+                Debug.LogWarning(hub != null && hub.IsConnected
+                    ? "[DesktopScreen] 8081은 붙었는데 화면 그림이 안 옴 → PC 서버가 AR LAPTOP 버전인지 확인 ([데스크탑 화면] 로그가 떠야 함)"
+                    : $"[DesktopScreen] 8081 연결 안 됨 → 흰 판. USB면 adb reverse tcp:8081 tcp:8081, 무선이면 PCStreamReceiver Server Host를 PC IP로 ({hub?.serverUrl})");
+            }
+        }
     }
+    float lastDiag;
 
     void LateUpdate()
     {
