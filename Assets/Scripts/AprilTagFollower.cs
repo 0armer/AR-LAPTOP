@@ -254,8 +254,8 @@ public class AprilTagFollower : MonoBehaviour
                 velPos = Vector3.Lerp(velPos, v, 0.5f);
                 (newRot * Quaternion.Inverse(obsRot)).ToAngleAxis(out float ang, out Vector3 axis);
                 if (ang > 180f) ang -= 360f;
-                Vector3 w = float.IsFinite(axis.x) ? axis * (ang / dtObs) : Vector3.zero;
-                velRot = Vector3.Lerp(velRot, w, 0.5f);
+                Vector3 angVel = float.IsFinite(axis.x) ? axis * (ang / dtObs) : Vector3.zero;
+                velRot = Vector3.Lerp(velRot, angVel, 0.5f);
             }
             else { velPos = Vector3.zero; velRot = Vector3.zero; }
             obsPos = newPos;
