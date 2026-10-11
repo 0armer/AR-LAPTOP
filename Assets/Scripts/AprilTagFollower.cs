@@ -53,10 +53,11 @@ public class AprilTagFollower : MonoBehaviour
     public bool flipVertical = false;
 
     [Header("따라가기")]
-    [Tooltip("0 = 새 위치로 바로 점프(빠릿함). 값을 주면 그만큼 부드럽게 따라감(클수록 빠름, 예: 30)")]
-    [Range(0f, 60f)] public float followSpeed = 0f;
-    [Tooltip("물체가 움직일 때 카메라 처리 지연(약 0.05~0.1초)만큼 앞으로 예측해서 붙인다. 0 = 끔. 떨리면 0으로")]
-    [Range(0f, 0.15f)] public float predictSeconds = 0.06f;
+    [Tooltip("0 = 새 위치로 바로 점프. 값을 주면 부드럽게 따라감 (클수록 빠름, 기본 25). " +
+             "작은 떨림(2mm/0.5도 이하)은 무시하고, 5cm/10도 이상 튀면 바로 따라감")]
+    [Range(0f, 60f)] public float followSpeed = 25f;
+    [Tooltip("물체 움직임을 앞으로 예측하는 시간. 노이즈를 증폭시켜 떨림의 원인이 되므로 기본 0 (끔)")]
+    [Range(0f, 0.15f)] public float predictSeconds = 0f;
     [Tooltip("태그를 놓쳐도 이 시간까지는 마지막 위치 유지 (그 뒤에도 판은 제자리에 남는다)")]
     public float lostTimeout = 0.5f;
     [Tooltip("태그 위치에 작은 큐브를 띄워 인식 확인")]
@@ -91,7 +92,7 @@ public class AprilTagFollower : MonoBehaviour
              "못 재면 크기값으로 계산한 거리를 쓴다")]
     public bool useDepthSensor = true;
     [Tooltip("깊이 보정 비율을 얼마나 부드럽게 바꿀지 (0~1, 작을수록 부드럽고 느림)")]
-    [Range(0.02f, 1f)] public float depthSmoothing = 0.25f;
+    [Range(0.02f, 1f)] public float depthSmoothing = 0.1f;
     [Tooltip("센서로 잰 거리가 크기 기준 거리의 이 배수 범위를 벗어나면 (손에 가려짐 등) 무시")]
     public Vector2 depthAcceptRatio = new Vector2(0.5f, 1.8f);
     EnvironmentRaycastManager envRay;
@@ -396,6 +397,13 @@ public class AprilTagFollower : MonoBehaviour
             return;
         }
         if (followSpeed <= 0f) { plane.SetPositionAndRotation(targetPos, targetRot); return; }
+
+        // 떨림 억제: 아주 작은 차이는 무시, 크게 튀면 바로 따라감
+        float dist = Vector3.Distance(plane.position, targetPos);
+        float ang = Quaternion.Angle(plane.rotation, targetRot);
+        if (dist < 0.002f && ang < 0.5f) return;
+        if (dist > 0.05f || ang > 10f) { plane.SetPositionAndRotation(targetPos, targetRot); return; }
+
         float a = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
         plane.SetPositionAndRotation(Vector3.Lerp(plane.position, targetPos, a),
                                      Quaternion.Slerp(plane.rotation, targetRot, a));
