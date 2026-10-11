@@ -605,9 +605,48 @@ class Program
     // ─────────────────────────────────────────────────────────────────────────
     const long DesktopFrameId = -1;
     static bool DesktopStreamOn = true;
-    static int DesktopMaxSide = 1920;     // 긴 변 최대 픽셀. 느리면 1280
-    static int DesktopIntervalMs = 50;    // 20장/초
-    static long DesktopJpegQuality = 80L;
+    static int DesktopMaxSide = 1280;     // 긴 변 최대 픽셀. 헤드셋이 풀어야 하므로 작을수록 덜 끊김 (선명도가 아쉬우면 1600)
+    static int DesktopIntervalMs = 33;    // 30장/초
+    static long DesktopJpegQuality = 75L;
+
+    // 클릭·드래그 직후엔 기다리지 말고 바로 한 장 찍어 보낸다 → 누른 결과가 빨리 보임
+    static readonly SemaphoreSlim desktopKick = new SemaphoreSlim(0, 1);
+    static void KickDesktop()
+    {
+        if (desktopKick.CurrentCount == 0) { try { desktopKick.Release(); } catch (SemaphoreFullException) { } }
+    }
+
+    // 마우스 커서도 그려 넣는다 (CopyFromScreen은 커서를 안 찍음 → 헤드셋에서 커서가 안 보였음)
+    [StructLayout(LayoutKind.Sequential)]
+    struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT ptScreenPos; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct ICONINFO { public bool fIcon; public int xHotspot; public int yHotspot; public IntPtr hbmMask; public IntPtr hbmColor; }
+    [DllImport("user32.dll")] static extern bool GetCursorInfo(ref CURSORINFO pci);
+    [DllImport("user32.dll")] static extern bool GetIconInfo(IntPtr hIcon, out ICONINFO piconinfo);
+    [DllImport("user32.dll")] static extern bool DrawIconEx(IntPtr hdc, int x, int y, IntPtr hIcon, int cx, int cy, int step, IntPtr brush, int flags);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr h);
+    const int CursorDrawSize = 48;   // 기본 32px보다 조금 크게 (헤드셋에서 잘 보이게)
+
+    static void DrawCursor(Graphics g, int originX, int originY)
+    {
+        var ci = new CURSORINFO { cbSize = Marshal.SizeOf<CURSORINFO>() };
+        if (!GetCursorInfo(ref ci) || (ci.flags & 1) == 0 || ci.hCursor == IntPtr.Zero) return;   // 1 = 보이는 상태
+        int hx = 0, hy = 0;
+        if (GetIconInfo(ci.hCursor, out var ii))
+        {
+            hx = ii.xHotspot; hy = ii.yHotspot;
+            if (ii.hbmMask != IntPtr.Zero) DeleteObject(ii.hbmMask);
+            if (ii.hbmColor != IntPtr.Zero) DeleteObject(ii.hbmColor);
+        }
+        float k = CursorDrawSize / 32f;
+        IntPtr hdc = g.GetHdc();
+        try
+        {
+            DrawIconEx(hdc, ci.ptScreenPos.X - originX - (int)(hx * k), ci.ptScreenPos.Y - originY - (int)(hy * k),
+                       ci.hCursor, CursorDrawSize, CursorDrawSize, 0, IntPtr.Zero, 3 /* DI_NORMAL */);
+        }
+        finally { g.ReleaseHdc(hdc); }
+    }
 
     static async Task DesktopStreamLoop()
     {
@@ -637,7 +676,10 @@ class Program
                     using (var bmp = new Bitmap(m.W, m.H, PixelFormat.Format32bppRgb))
                     {
                         using (var g = Graphics.FromImage(bmp))
+                        {
                             g.CopyFromScreen(m.X, m.Y, 0, 0, new Size(m.W, m.H), CopyPixelOperation.SourceCopy);
+                            try { DrawCursor(g, m.X, m.Y); } catch { }
+                        }
 
                         Bitmap send = bmp;
                         Bitmap scaled = null;
@@ -684,7 +726,7 @@ class Program
                 catch (Exception ex) { Console.WriteLine($"[데스크탑 화면] 캡처 오류: {ex.Message}"); }
             }
             int wait = DesktopIntervalMs - (int)(Environment.TickCount64 - t0);
-            await Task.Delay(Math.Max(5, wait));
+            await desktopKick.WaitAsync(Math.Max(1, wait));   // 클릭하면 기다리지 않고 바로 다음 장
         }
     }
 
@@ -823,6 +865,8 @@ class Program
             int mon = parts.Length >= 4 ? int.Parse(parts[3]) : 0;
             MapToMonitor(mon, u, v, out int x, out int y);
 
+            if (type == "down" || type == "move" || type == "up" || type == "hover") KickDesktop();
+
             switch (type)
             {
                 case "down":
@@ -840,6 +884,9 @@ class Program
                 case "up":
                     SetCursorPos(x, y);
                     mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, IntPtr.Zero);
+                    break;
+                case "hover":   // [AR LAPTOP] 손가락이 화면 위에 떠 있을 때 커서만 따라오게 (클릭 없음)
+                    SetCursorPos(x, y);
                     break;
 
                 // 주먹으로 창 통째로 옮기기: 실제 클릭/커서 이동 없이 SetWindowPos로 직접 위치만 바꾼다.

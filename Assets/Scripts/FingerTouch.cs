@@ -27,15 +27,18 @@ public class FingerTouch : MonoBehaviour
     [Tooltip("끄면 터치 안 함")]
     public bool touchEnabled = true;
     [Tooltip("손가락 끝이 면에서 이 거리(m) 안으로 오면 닿은 것")]
-    public float touchOn = 0.010f;
+    public float touchOn = 0.005f;   // [AR LAPTOP] 실제로 닿았을 때 (손가락 끝 뼈는 피부 끝과 거의 같음)
     [Tooltip("이 거리(m) 밖으로 나가면 뗀 것")]
-    public float touchOff = 0.020f;
+    public float touchOff = 0.015f;
     [Tooltip("면 뒤로 이만큼(m) 넘게 들어가면 뗀 것으로 본다")]
     public float maxPenetration = 0.06f;
     [Tooltip("판 가장자리 바깥 여유 (판 크기 비율)")]
     public float edgeMargin = 0.03f;
     [Tooltip("움직임 전송 빈도(Hz)")]
     public float sendRate = 60f;
+
+    [Tooltip("손가락이 화면 위 이 거리(m) 안에 떠 있으면 마우스 커서가 손가락을 따라온다 (클릭은 안 함)")]
+    public float hoverDistance = 0.05f;
 
     [Header("꺼낸 창")]
     [Tooltip("이보다 적게(m) 움직이고 떼면 클릭")]
@@ -79,7 +82,11 @@ public class FingerTouch : MonoBehaviour
             if (tip == null || pc == null || !pc.IsConnected) { Release(st, pc, false); continue; }
 
             if (st.down) Continue(st, tip.position, pc);
-            else TryBegin(st, tip.position, pc);
+            else
+            {
+                TryBegin(st, tip.position, pc);
+                if (!st.down) Hover(st, tip.position, pc);
+            }
         }
     }
 
@@ -116,6 +123,26 @@ public class FingerTouch : MonoBehaviour
 
         if (st.isDesktop)
             pc.SendText(string.Format("down,{0:F4},{1:F4},{2}", st.lastUV.x, st.lastUV.y, st.monitorIndex));
+    }
+
+    // ── 화면 위에 떠 있을 때: 커서만 손가락을 따라옴 ─────────────────────────
+    void Hover(TouchState st, Vector3 tip, PCStreamReceiver pc)
+    {
+        if (!DesktopVisible() || Time.time - st.lastSend < 1f / 30f) return;
+        foreach (var mp in Surfaces())
+        {
+            if (mp.window != null) continue;
+            Vector3 local = mp.t.InverseTransformPoint(tip);
+            if (Mathf.Abs(local.x) > 0.5f || Mathf.Abs(local.y) > 0.5f) continue;
+            float d = SignedDepth(mp.t, tip);
+            if (d < 0f || d > hoverDistance) continue;
+            Vector2 uv = ToUV(local);
+            if ((uv - st.lastUV).sqrMagnitude < 1e-6f) return;
+            pc.SendText(string.Format("hover,{0:F4},{1:F4},{2}", uv.x, uv.y, mp.monitor));
+            st.lastUV = uv;
+            st.lastSend = Time.time;
+            return;
+        }
     }
 
     // ── 닿은 채로 움직이기 ───────────────────────────────────────────────────
@@ -178,7 +205,7 @@ public class FingerTouch : MonoBehaviour
     }
 
     // ── 도우미 ──────────────────────────────────────────────────────────────
-    static bool DesktopVisible()
+    public static bool DesktopVisible()
     {
         var tag = AprilTagFollower.Instance;
         return tag == null || !tag.fixedLayout || tag.IsTracking;
@@ -208,7 +235,43 @@ public class FingerTouch : MonoBehaviour
 
     static Vector3 ToLocal(Vector2 uv) => new Vector3(uv.x - 0.5f, (1f - uv.y) - 0.5f, 0f);
 
-    static Transform IndexTip(HandRayPointer p)
+    // ── 화면 판·꺼낸 창 목록 (프레임마다 한 번만 찾음) ──
+    public struct Surface { public Transform t; public WindowQuadReceiver window; public int monitor; }
+    static readonly List<Surface> surfaces = new();
+    static int surfacesFrame = -1;
+
+    public static List<Surface> Surfaces()
+    {
+        if (surfacesFrame == Time.frameCount) return surfaces;
+        surfacesFrame = Time.frameCount;
+        surfaces.Clear();
+        if (DesktopVisible())
+            foreach (var mp in FindObjectsByType<MonitorPlane>(FindObjectsSortMode.None))
+                if (mp.gameObject.activeInHierarchy) surfaces.Add(new Surface { t = mp.transform, monitor = mp.monitorIndex });
+        foreach (var w in FindObjectsByType<WindowQuadReceiver>(FindObjectsSortMode.None))
+            if (w.gameObject.activeInHierarchy) surfaces.Add(new Surface { t = w.transform, window = w });
+        return surfaces;
+    }
+
+    // 검지 끝에서 가장 가까운 화면/창 면까지 거리(m). 면 범위(가장자리 여유 포함) 밖이면 무한대.
+    public static float NearestSurfaceDistance(Vector3 tip, float edgeMarginM = 0.05f)
+    {
+        float best = float.PositiveInfinity;
+        foreach (var s in Surfaces())
+        {
+            if (s.t == null) continue;
+            Vector3 local = s.t.InverseTransformPoint(tip);
+            Vector3 sc = s.t.lossyScale;
+            float mx = 0.5f + edgeMarginM / Mathf.Max(Mathf.Abs(sc.x), 1e-4f);
+            float my = 0.5f + edgeMarginM / Mathf.Max(Mathf.Abs(sc.y), 1e-4f);
+            if (Mathf.Abs(local.x) > mx || Mathf.Abs(local.y) > my) continue;
+            float d = Mathf.Abs(SignedDepth(s.t, tip));
+            if (d < best) best = d;
+        }
+        return best;
+    }
+
+    public static Transform IndexTip(HandRayPointer p)
     {
         var sk = p.skeleton;
         if (sk == null && p.hand != null) sk = p.hand.GetComponent<OVRSkeleton>();

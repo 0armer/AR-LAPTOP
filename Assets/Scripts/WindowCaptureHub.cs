@@ -43,12 +43,15 @@ public class WindowCaptureHub : MonoBehaviour
     // ID별로 등록된 쿼드(Renderer)
     private readonly Dictionary<long, Renderer> registered = new();
 
-    // 창마다 텍스처를 2장 두고 번갈아 쓴다(더블 버퍼링).
-    // 한 장만 쓰면 GPU가 그 텍스처를 읽는 도중에 새 프레임을 덮어쓰게 되어,
-    // 화면이 가로로 어긋나 보이는(롤링 셔터/티어링) 현상이 생긴다.
-    // 뒤쪽 버퍼에 디코드한 뒤 머티리얼을 그 버퍼로 교체하면 그런 충돌이 없다.
-    private readonly Dictionary<long, Texture2D[]> textures = new();
-    private readonly Dictionary<long, int> frontIndex = new();
+    // [AR LAPTOP] JPEG는 mip 없는 임시 텍스처에 풀고(빠름), 화면에 쓰는 RenderTexture로 GPU 복사한다.
+    // mipmap은 GPU가 만든다 → 예전처럼 CPU가 매 프레임 mip을 만들다 헤드셋 화면까지 끊기는 일이 없다.
+    // GPU는 명령을 순서대로 처리하므로 복사 도중 화면이 찢어지는(티어링) 일도 없다.
+    private readonly Dictionary<long, Texture2D> staging = new();
+    private readonly Dictionary<long, RenderTexture> display = new();
+    [Tooltip("한 프레임에 풀 수 있는 이미지 수 (많으면 프레임이 끊김)")]
+    public int maxDecodesPerFrame = 2;
+    readonly List<long> order = new();
+    int rr;
 
     void Awake()
     {
@@ -124,38 +127,39 @@ public class WindowCaptureHub : MonoBehaviour
     public void Register(long id, Renderer renderer)
     {
         registered[id] = renderer;
-        // 텍스처 2장(더블 버퍼).
-        // mipmap을 켜야 멀리서/비스듬히 볼 때 글자에서 생기는 모아레(격자무늬 일렁임)가 사라진다.
-        // 대신 이방성 필터를 높여서 비스듬히 봐도 흐려지지 않게 한다.
-        var pair = new Texture2D[2];
-        for (int i = 0; i < 2; i++)
-        {
-            var t = new Texture2D(2, 2, TextureFormat.RGB24, useMipmaps);
-            t.filterMode = textureFilter;
-            t.anisoLevel = Mathf.Clamp(anisoLevel, 1, 16);
-            t.wrapMode = TextureWrapMode.Clamp;
-            if (useMipmaps) t.mipMapBias = mipMapBias;   // 더 선명한 mip 단계를 쓰게 당긴다
-            pair[i] = t;
-        }
-        textures[id] = pair;
-        frontIndex[id] = 0;
-        renderer.material.mainTexture = pair[0];
+        if (!staging.ContainsKey(id))
+            staging[id] = new Texture2D(2, 2, TextureFormat.RGB24, false);
+        renderer.material.mainTexture = display.TryGetValue(id, out var rt) && rt != null ? rt : staging[id];
         Debug.Log($"[Hub] 쿼드 등록 id={id}");
     }
 
-    // 창을 데스크탑으로 되돌릴 때(insert) 등록 해제. 안 해주면 더 이상 아무도 안 보는
-    // 텍스처를 계속 디코딩하고, 쓰지도 않는 프레임 데이터가 계속 쌓인다.
+    // 창을 데스크탑으로 되돌릴 때(insert) 등록 해제
     public void Unregister(long id)
     {
         registered.Remove(id);
         latestFrames.TryRemove(id, out _);
-        if (textures.TryGetValue(id, out var pair))
-        {
-            textures.Remove(id);
-            frontIndex.Remove(id);
-            foreach (var t in pair) if (t != null) Destroy(t);
-        }
+        if (staging.TryGetValue(id, out var t)) { staging.Remove(id); if (t != null) Destroy(t); }
+        if (display.TryGetValue(id, out var rt)) { display.Remove(id); if (rt != null) { rt.Release(); Destroy(rt); } }
         Debug.Log($"[Hub] 쿼드 등록 해제 id={id}");
+    }
+
+    RenderTexture EnsureDisplay(long id, int w, int h)
+    {
+        if (display.TryGetValue(id, out var rt) && rt != null && rt.width == w && rt.height == h) return rt;
+        if (rt != null) { rt.Release(); Destroy(rt); }
+        rt = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB)
+        {
+            useMipMap = useMipmaps,
+            autoGenerateMips = useMipmaps,
+            filterMode = textureFilter,
+            anisoLevel = Mathf.Clamp(anisoLevel, 1, 16),
+            wrapMode = TextureWrapMode.Clamp,
+            mipMapBias = useMipmaps ? mipMapBias : 0f,
+            name = "Frame_" + id,
+        };
+        rt.Create();
+        display[id] = rt;
+        return rt;
     }
 
     async Task ReceiveLoop(ClientWebSocket ws, CancellationToken token)
@@ -196,28 +200,31 @@ public class WindowCaptureHub : MonoBehaviour
 
     void Update()
     {
-        // 등록된 쿼드마다, 최신 프레임이 있으면 "뒤쪽 버퍼"에 디코드한 뒤 그 버퍼로 갈아끼운다.
-        // 지금 화면에 보이는 텍스처는 절대 건드리지 않으므로 가로로 어긋나 보이는 현상이 안 생긴다.
-        foreach (var kv in registered)
+        // 최신 프레임만 푼다(밀린 건 버림). 데스크탑(-1)을 먼저, 나머지 창은 돌아가며.
+        order.Clear();
+        if (registered.ContainsKey(-1)) order.Add(-1);
+        int n0 = order.Count;
+        foreach (var id in registered.Keys) if (id != -1) order.Add(id);
+        int others = order.Count - n0;
+
+        int done = 0;
+        for (int k = 0; k < order.Count && done < Mathf.Max(1, maxDecodesPerFrame); k++)
         {
-            long id = kv.Key;
+            long id = k < n0 ? order[k] : order[n0 + (rr + k - n0) % Mathf.Max(1, others)];
             if (!latestFrames.TryGetValue(id, out var jpeg) || jpeg == null) continue;
             latestFrames[id] = null; // 소비
+            if (!staging.TryGetValue(id, out var tex) || tex == null) continue;
 
-            if (!textures.TryGetValue(id, out var pair)) continue;
-            if (!frontIndex.TryGetValue(id, out int front)) front = 0;
-
-            int back = 1 - front;
-            var target = pair[back];
-            if (target == null) continue;
-
-            if (target.LoadImage(jpeg))
+            if (tex.LoadImage(jpeg, false))
             {
-                var rend = kv.Value;
-                if (rend != null) rend.material.mainTexture = target;
-                frontIndex[id] = back;
+                var rt = EnsureDisplay(id, tex.width, tex.height);
+                Graphics.Blit(tex, rt);
+                var rend = registered[id];
+                if (rend != null && rend.material.mainTexture != rt) rend.material.mainTexture = rt;
             }
+            done++;
         }
+        rr++;
     }
 
     async void OnDestroy()

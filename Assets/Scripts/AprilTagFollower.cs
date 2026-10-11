@@ -70,6 +70,17 @@ public class AprilTagFollower : MonoBehaviour
     public float holdPosition = 0.005f;
     [Tooltip("판이 이 각도(도)보다 적게 어긋나면 안 돌리고 가만히 둔다")]
     public float holdAngle = 2f;
+    [Tooltip("고정 상태에서 이 거리(m) 넘게 어긋나야 움직인 걸로 본다")]
+    public float unlockPosition = 0.012f;
+    [Tooltip("고정 상태에서 이 각도(도) 넘게 어긋나야 움직인 걸로 본다")]
+    public float unlockAngle = 4f;
+    [Tooltip("연속 몇 번 어긋나야 고정을 풀지 (튀는 값 무시)")]
+    public int unlockFrames = 3;
+    [Tooltip("이 시간(초) 가만히 있으면 고정")]
+    public float lockAfterStill = 0.25f;
+    bool locked;
+    int unlockCount;
+    float stillSince = -1f, lockLastObs = -10f;
     [Tooltip("헤드셋 시야 아래에 상태 글자 띄우기 (태그·깊이 센서 확인용)")]
     public bool showHud = true;
     [Tooltip("물체 움직임을 앞으로 예측하는 시간. 노이즈를 증폭시켜 떨림의 원인이 되므로 기본 0 (끔)")]
@@ -423,10 +434,40 @@ public class AprilTagFollower : MonoBehaviour
             Debug.Log("[AprilTag] 태그 발견 → 판을 태그 오른쪽 아래로 붙임 (A4 크기)");
             return;
         }
-        // 가만히 두기: 조금 어긋난 건 무시 → 노트북이 안 움직이면 판도 딱 멈춰 있음
         float dist = Vector3.Distance(plane.position, targetPos);
         float ang = Quaternion.Angle(plane.rotation, targetRot);
-        if (dist < holdPosition && ang < holdAngle) return;
+        bool newObs = obsTime != lockLastObs;
+        bool reacquired = newObs && obsTime - lockLastObs > lostTimeout;   // 한동안 놓쳤다가 다시 봄
+        if (newObs) lockLastObs = obsTime;
+
+        if (reacquired)
+        {
+            locked = false; unlockCount = 0; stillSince = -1f;
+            plane.SetPositionAndRotation(targetPos, targetRot);
+            return;
+        }
+
+        // ── 고정 상태: 노트북이 가만히 있으면 판을 완전히 멈춘다 ──
+        // 측정값이 한두 번 튀는 건 무시하고, 연속 unlockFrames번 크게 어긋나야 "진짜 움직였다"고 보고 풀어준다.
+        if (locked)
+        {
+            if (dist > unlockPosition || ang > unlockAngle)
+            {
+                if (newObs) unlockCount++;
+                if (unlockCount < unlockFrames) return;
+                locked = false; unlockCount = 0; stillSince = -1f;
+            }
+            else { if (newObs) unlockCount = 0; return; }
+        }
+
+        // ── 따라가는 상태: 움직임이 잦아들어 잠깐 가만히 있으면 다시 고정 ──
+        if (dist < holdPosition && ang < holdAngle)
+        {
+            if (stillSince < 0f) stillSince = Time.time;
+            if (Time.time - stillSince > lockAfterStill) locked = true;
+            return;
+        }
+        stillSince = -1f;
         if (followSpeed <= 0f || dist > 0.05f || ang > 10f) { plane.SetPositionAndRotation(targetPos, targetRot); return; }
 
         float a = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
@@ -500,7 +541,7 @@ public class AprilTagFollower : MonoBehaviour
 
         float el = Time.time - hudTime;
         if (el < 0.5f) return;
-        hud.text = $"TAG {(IsTracking ? "SEEN" : "LOST")}  det {hudDetections / el:F0}/s\n" +
+        hud.text = $"TAG {(IsTracking ? "SEEN" : "LOST")}{(locked ? " LOCK" : "")}  det {hudDetections / el:F0}/s  tag {EffectiveTagSize * 100f:F1}cm\n" +
                    $"DEPTH {hudDepthHits / el:F0}/s  ratio x{depthRatio:F2}  {hudDepth}";
         hudDetections = 0; hudDepthHits = 0; hudTime = Time.time;
     }

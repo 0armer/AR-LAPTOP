@@ -306,6 +306,17 @@ public class HandRayPointer : MonoBehaviour
         }
         if (line != null && !line.enabled) line.enabled = true;
 
+        // [AR LAPTOP] 가까이 모드: 검지 끝이 화면 판/꺼낸 창에 가까우면 레이·핀치·주먹을 끄고
+        // 검지 터치(FingerTouch)만 쓴다. 이미 잡고/끌고 있는 중이면 그 동작이 끝날 때까지 기다린다.
+        UpdateNearMode();
+        if (IsNearMode)
+        {
+            if (line != null) line.enabled = false;
+            wasPinch = false; wasGrab = false; wasActivate = false;
+            grabLostSince = -1f;
+            return;
+        }
+
         Vector3 start;
         Quaternion handRot;
         if (raySmoothing <= 0f)
@@ -898,6 +909,29 @@ public class HandRayPointer : MonoBehaviour
 
     // 손 조작이 꺼질 때(박수) 진행 중이던 상호작용을 전부 안전하게 정리한다.
     // 이걸 안 하면 "잡은 채로 꺼짐" 상태가 남아서 다시 켰을 때 이상하게 동작한다.
+    [Header("가까이 모드 (검지 터치)")]
+    [Tooltip("켜면 화면 가까이에서는 레이를 끄고 검지로 직접 누른다")]
+    public bool nearTouchMode = true;
+    [Tooltip("검지 끝이 화면/창에서 이 거리(m) 안으로 오면 가까이 모드")]
+    public float nearEnter = 0.10f;
+    [Tooltip("이 거리(m) 밖으로 나가면 다시 레이 모드 (enter보다 크게 → 경계에서 깜빡이지 않음)")]
+    public float nearExit = 0.15f;
+    public bool IsNearMode { get; private set; }
+
+    void UpdateNearMode()
+    {
+        bool busy = wasPinch || wasGrab || dragging || heldQuad != null || grabbedQuad != null;
+        if (!nearTouchMode || busy || hand == null || !hand.IsTracked)
+        {
+            if (!busy) IsNearMode = false;
+            return;
+        }
+        var tip = FingerTouch.IndexTip(this);
+        if (tip == null) { IsNearMode = false; return; }
+        float d = FingerTouch.NearestSurfaceDistance(tip.position);
+        IsNearMode = IsNearMode ? d < nearExit : d < nearEnter;
+    }
+
     void ReleaseAllInteractions()
     {
         if (resizingEdge)
