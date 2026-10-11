@@ -85,9 +85,9 @@ public class DesktopScreenView : MonoBehaviour
     {
         if (plane == null || screen == null) return;
 
-        // AprilTag 고정 배치 모드면, 태그를 처음 보기 전까지는 화면을 숨긴다 (엉뚱한 자리에 떠 있지 않게)
+        // AprilTag 고정 배치 모드면, 태그가 안 보이는 동안(lostTimeout 넘게) 화면을 숨긴다 (엉뚱한 자리에 남지 않게)
         var tag = AprilTagFollower.Instance;
-        screenRenderer.enabled = tag == null || !tag.fixedLayout || tag.HasEverSeen;
+        screenRenderer.enabled = tag == null || !tag.fixedLayout || tag.IsTracking;
 
         // 보는 사람 쪽으로 살짝 띄운다. 판의 z 스케일이 1이 아니라서 로컬 값으로 환산.
         var cam = Camera.main;

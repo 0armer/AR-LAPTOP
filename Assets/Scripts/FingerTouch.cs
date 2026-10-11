@@ -90,8 +90,9 @@ public class FingerTouch : MonoBehaviour
         float bestAbs = float.MaxValue;
         Vector3 bestLocal = default;
 
-        foreach (var mp in FindObjectsByType<MonitorPlane>(FindObjectsSortMode.None))
-            Consider(mp.transform, tip, ref best, ref bestAbs, ref bestLocal);
+        if (DesktopVisible())   // 태그가 안 보여서 화면 판이 숨겨졌으면 터치 안 함
+            foreach (var mp in FindObjectsByType<MonitorPlane>(FindObjectsSortMode.None))
+                Consider(mp.transform, tip, ref best, ref bestAbs, ref bestLocal);
         foreach (var w in FindObjectsByType<WindowQuadReceiver>(FindObjectsSortMode.None))
             Consider(w.transform, tip, ref best, ref bestAbs, ref bestLocal);
 
@@ -125,7 +126,7 @@ public class FingerTouch : MonoBehaviour
         Vector3 local = st.target.InverseTransformPoint(tip);
         float d = SignedDepth(st.target, tip);
         bool outside = Mathf.Abs(local.x) > 0.5f + edgeMargin * 2f || Mathf.Abs(local.y) > 0.5f + edgeMargin * 2f;
-        if (d > touchOff || d < -maxPenetration || outside) { Release(st, pc, true); return; }
+        if (d > touchOff || d < -maxPenetration || outside || (st.isDesktop && !DesktopVisible())) { Release(st, pc, true); return; }
 
         Vector2 uv = ToUV(local);
 
@@ -177,6 +178,12 @@ public class FingerTouch : MonoBehaviour
     }
 
     // ── 도우미 ──────────────────────────────────────────────────────────────
+    static bool DesktopVisible()
+    {
+        var tag = AprilTagFollower.Instance;
+        return tag == null || !tag.fixedLayout || tag.IsTracking;
+    }
+
     void Consider(Transform t, Vector3 tip, ref Transform best, ref float bestAbs, ref Vector3 bestLocal)
     {
         if (t == null || !t.gameObject.activeInHierarchy) return;

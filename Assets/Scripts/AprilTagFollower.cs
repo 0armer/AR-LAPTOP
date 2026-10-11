@@ -58,7 +58,7 @@ public class AprilTagFollower : MonoBehaviour
     [Range(0f, 60f)] public float followSpeed = 25f;
     [Tooltip("물체 움직임을 앞으로 예측하는 시간. 노이즈를 증폭시켜 떨림의 원인이 되므로 기본 0 (끔)")]
     [Range(0f, 0.15f)] public float predictSeconds = 0f;
-    [Tooltip("태그를 놓쳐도 이 시간까지는 마지막 위치 유지 (그 뒤에도 판은 제자리에 남는다)")]
+    [Tooltip("태그를 놓쳐도 이 시간(초)까지는 마지막 위치에 보여줌. 넘으면 화면 판을 숨긴다")]
     public float lostTimeout = 0.5f;
     [Tooltip("태그 위치에 작은 큐브를 띄워 인식 확인")]
     public bool showTagGizmo = true;
@@ -84,6 +84,8 @@ public class AprilTagFollower : MonoBehaviour
 
     // 한 번이라도 태그를 봤는지. 보기 전엔 화면 판을 숨긴다(DesktopScreenView가 읽음).
     public bool HasEverSeen { get; private set; }
+    // 지금 태그가 보이는지 (마지막으로 본 지 lostTimeout 이내). 아니면 화면 판을 숨기고 터치도 막는다.
+    public bool IsTracking => hasObs && Time.time - obsTime <= lostTimeout;
 
     PassthroughCameraAccess pca;
 
