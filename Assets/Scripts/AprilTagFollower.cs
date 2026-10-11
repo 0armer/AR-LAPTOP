@@ -59,13 +59,17 @@ public class AprilTagFollower : MonoBehaviour
 
     [Header("떨림 필터 (One Euro: 가만히 있으면 강하게 거르고, 움직이면 바로 따라감)")]
     [Tooltip("가만히 있을 때 거르는 정도(Hz). 작을수록 안정적, 클수록 빠릿")]
-    public float filterMinCutoff = 1.0f;
+    public float filterMinCutoff = 0.5f;
     [Tooltip("움직일 때 반응 속도. 클수록 빠르게 붙음 (늦게 따라오면 올리기)")]
-    public float filterBeta = 15f;
+    public float filterBeta = 8f;
     [Tooltip("회전: 가만히 있을 때 거르는 정도(Hz)")]
-    public float rotMinCutoff = 1.0f;
+    public float rotMinCutoff = 0.3f;
     [Tooltip("회전: 돌릴 때 반응 속도")]
-    public float rotBeta = 0.08f;
+    public float rotBeta = 0.03f;
+    [Tooltip("판이 이 거리(m)보다 적게 어긋나면 안 움직이고 가만히 둔다 (미세 떨림 제거)")]
+    public float holdPosition = 0.005f;
+    [Tooltip("판이 이 각도(도)보다 적게 어긋나면 안 돌리고 가만히 둔다")]
+    public float holdAngle = 2f;
     [Tooltip("헤드셋 시야 아래에 상태 글자 띄우기 (태그·깊이 센서 확인용)")]
     public bool showHud = true;
     [Tooltip("물체 움직임을 앞으로 예측하는 시간. 노이즈를 증폭시켜 떨림의 원인이 되므로 기본 0 (끔)")]
@@ -106,7 +110,7 @@ public class AprilTagFollower : MonoBehaviour
              "못 재면 크기값으로 계산한 거리를 쓴다")]
     public bool useDepthSensor = true;
     [Tooltip("깊이 보정 비율을 얼마나 부드럽게 바꿀지 (0~1, 작을수록 부드럽고 느림)")]
-    [Range(0.02f, 1f)] public float depthSmoothing = 0.1f;
+    [Range(0.02f, 1f)] public float depthSmoothing = 0.05f;
     [Tooltip("센서로 잰 거리가 크기 기준 거리의 이 배수 범위를 벗어나면 (손에 가려짐 등) 무시")]
     public Vector2 depthAcceptRatio = new Vector2(0.25f, 4f);
     EnvironmentRaycastManager envRay;
@@ -419,13 +423,11 @@ public class AprilTagFollower : MonoBehaviour
             Debug.Log("[AprilTag] 태그 발견 → 판을 태그 오른쪽 아래로 붙임 (A4 크기)");
             return;
         }
-        if (followSpeed <= 0f) { plane.SetPositionAndRotation(targetPos, targetRot); return; }
-
-        // 떨림 억제: 아주 작은 차이는 무시, 크게 튀면 바로 따라감
+        // 가만히 두기: 조금 어긋난 건 무시 → 노트북이 안 움직이면 판도 딱 멈춰 있음
         float dist = Vector3.Distance(plane.position, targetPos);
         float ang = Quaternion.Angle(plane.rotation, targetRot);
-        if (dist < 0.002f && ang < 0.5f) return;
-        if (dist > 0.05f || ang > 10f) { plane.SetPositionAndRotation(targetPos, targetRot); return; }
+        if (dist < holdPosition && ang < holdAngle) return;
+        if (followSpeed <= 0f || dist > 0.05f || ang > 10f) { plane.SetPositionAndRotation(targetPos, targetRot); return; }
 
         float a = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
         plane.SetPositionAndRotation(Vector3.Lerp(plane.position, targetPos, a),

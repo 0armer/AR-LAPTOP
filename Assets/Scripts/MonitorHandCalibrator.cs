@@ -159,9 +159,13 @@ public class MonitorHandCalibrator : MonoBehaviour
     void Awake() { Instance = this; }
     void OnDestroy() { if (Instance == this) Instance = null; }
 
+    [Tooltip("[AR LAPTOP] 왼주먹으로 판 그리기. 지금은 AprilTag가 판을 놓으므로 꺼둠. 다시 쓰려면 켜기")]
+    public bool handPlacementEnabled = false;
+
     async void Start()
     {
         AutoFindHands();
+        if (!handPlacementEnabled) { Debug.Log("[HandCalib] 손으로 판 그리기 꺼짐 (handPlacementEnabled = false)"); return; }
         if (clearSavedOnPlay) DeleteAllPrefs();
 
         for (int i = 0; i < slotKeys.Length; i++)
@@ -234,6 +238,7 @@ public class MonitorHandCalibrator : MonoBehaviour
     // =========================================================
     void Update()
     {
+        if (!handPlacementEnabled) return;   // [AR LAPTOP] 왼주먹 판 그리기 비활성화
         dbgLT = leftHand != null && leftHand.IsTracked;
         dbgRT = rightHand != null && rightHand.IsTracked;
         dbgRConf = rightHand != null && rightHand.IsDataHighConfidence;
