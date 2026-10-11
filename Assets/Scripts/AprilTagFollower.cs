@@ -55,7 +55,19 @@ public class AprilTagFollower : MonoBehaviour
     [Header("따라가기")]
     [Tooltip("0 = 새 위치로 바로 점프. 값을 주면 부드럽게 따라감 (클수록 빠름, 기본 25). " +
              "작은 떨림(2mm/0.5도 이하)은 무시하고, 5cm/10도 이상 튀면 바로 따라감")]
-    [Range(0f, 60f)] public float followSpeed = 25f;
+    [Range(0f, 60f)] public float followSpeed = 0f;   // 떨림은 아래 One Euro 필터가 잡으므로 기본 0(바로 붙음)
+
+    [Header("떨림 필터 (One Euro: 가만히 있으면 강하게 거르고, 움직이면 바로 따라감)")]
+    [Tooltip("가만히 있을 때 거르는 정도(Hz). 작을수록 안정적, 클수록 빠릿")]
+    public float filterMinCutoff = 1.0f;
+    [Tooltip("움직일 때 반응 속도. 클수록 빠르게 붙음 (늦게 따라오면 올리기)")]
+    public float filterBeta = 15f;
+    [Tooltip("회전: 가만히 있을 때 거르는 정도(Hz)")]
+    public float rotMinCutoff = 1.0f;
+    [Tooltip("회전: 돌릴 때 반응 속도")]
+    public float rotBeta = 0.08f;
+    [Tooltip("헤드셋 시야 아래에 상태 글자 띄우기 (태그·깊이 센서 확인용)")]
+    public bool showHud = true;
     [Tooltip("물체 움직임을 앞으로 예측하는 시간. 노이즈를 증폭시켜 떨림의 원인이 되므로 기본 0 (끔)")]
     [Range(0f, 0.15f)] public float predictSeconds = 0f;
     [Tooltip("태그를 놓쳐도 이 시간(초)까지는 마지막 위치에 보여줌. 넘으면 화면 판을 숨긴다")]
@@ -96,7 +108,7 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("깊이 보정 비율을 얼마나 부드럽게 바꿀지 (0~1, 작을수록 부드럽고 느림)")]
     [Range(0.02f, 1f)] public float depthSmoothing = 0.1f;
     [Tooltip("센서로 잰 거리가 크기 기준 거리의 이 배수 범위를 벗어나면 (손에 가려짐 등) 무시")]
-    public Vector2 depthAcceptRatio = new Vector2(0.5f, 1.8f);
+    public Vector2 depthAcceptRatio = new Vector2(0.25f, 4f);
     EnvironmentRaycastManager envRay;
     float depthRatio = 1f;          // 센서 거리 / 크기 기준 거리 (부드럽게 갱신)
     bool hasDepthRatio;
@@ -277,7 +289,9 @@ public class AprilTagFollower : MonoBehaviour
 
             // 깊이 센서: 카메라 → 태그 중심 방향으로 레이를 쏴서 실제 표면까지 거리를 잰다.
             // 방향(영상 속 위치)은 그대로 두고 거리만 바꾸므로, 태그 크기값이 틀려도 판이 종이 면에 붙는다.
-            if (envRay != null && envRay.isActiveAndEnabled)
+            if (envRay == null) hudDepth = useDepthSensor ? "OFF(unsupported)" : "OFF";
+            else if (!envRay.isActiveAndEnabled) hudDepth = "manager disabled";
+            else
             {
                 float estDist = p.magnitude;
                 Vector3 dirWorld = camPose.rotation * (p / Mathf.Max(estDist, 1e-4f));
@@ -290,13 +304,19 @@ public class AprilTagFollower : MonoBehaviour
                         depthRatio = hasDepthRatio ? Mathf.Lerp(depthRatio, r, depthSmoothing) : r;
                         hasDepthRatio = true;
                         statDepthHits++;
+                        hudDepthHits++;
+                        hudDepth = $"ok {sensed:F2}m (tag est {estDist:F2}m)";
                     }
+                    else hudDepth = $"rejected r={r:F2} ({sensed:F2}m vs {estDist:F2}m)";
                 }
+                else hudDepth = $"no hit ({eh.status})";
             }
             if (useDepthSensor && hasDepthRatio) p *= depthRatio;   // 못 잰 프레임은 마지막 비율 유지
 
             Vector3 newPos = camPose.position + camPose.rotation * p;
             Quaternion newRot = camPose.rotation * tag.Rotation;
+            OneEuro(ref newPos, ref newRot);
+            hudDetections++;
             float dtObs = Time.time - obsTime;
             if (hasObs && dtObs > 0.005f && dtObs < 0.3f)
             {
@@ -322,6 +342,7 @@ public class AprilTagFollower : MonoBehaviour
     void LateUpdate()
     {
         StatLog();
+        UpdateHud();
 
         bool fresh = hasObs && Time.time - obsTime <= lostTimeout;
         UpdateGizmo(fresh);
@@ -409,6 +430,77 @@ public class AprilTagFollower : MonoBehaviour
         float a = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
         plane.SetPositionAndRotation(Vector3.Lerp(plane.position, targetPos, a),
                                      Quaternion.Slerp(plane.rotation, targetRot, a));
+    }
+
+    // ── One Euro 필터: 속도가 느리면 강하게 거르고(떨림 제거), 빠르면 거의 그대로(지연 제거) ──
+    bool fInit;
+    float fTime, fAngSpeed;
+    Vector3 fPos, fVel;
+    Quaternion fRot;
+
+    static float Alpha(float cutoffHz, float dt)
+    {
+        float tau = 1f / (2f * Mathf.PI * Mathf.Max(cutoffHz, 1e-3f));
+        return 1f / (1f + tau / dt);
+    }
+
+    void OneEuro(ref Vector3 pos, ref Quaternion rot)
+    {
+        float now = Time.time;
+        float dt = now - fTime;
+        if (!fInit || dt > 0.3f)
+        {
+            fPos = pos; fRot = rot; fVel = Vector3.zero; fAngSpeed = 0f; fInit = true;
+        }
+        else
+        {
+            dt = Mathf.Max(dt, 1e-3f);
+            fVel = Vector3.Lerp(fVel, (pos - fPos) / dt, Alpha(1f, dt));
+            fPos = Vector3.Lerp(fPos, pos, Alpha(filterMinCutoff + filterBeta * fVel.magnitude, dt));
+
+            fAngSpeed = Mathf.Lerp(fAngSpeed, Quaternion.Angle(fRot, rot) / dt, Alpha(1f, dt));
+            fRot = Quaternion.Slerp(fRot, rot, Alpha(rotMinCutoff + rotBeta * fAngSpeed, dt));
+        }
+        fTime = now;
+        pos = fPos; rot = fRot;
+    }
+
+    // ── 시야 아래 상태 글자 (영어: 헤드셋 기본 글꼴에 한글이 없을 수 있음) ──
+    TextMesh hud;
+    string hudDepth = "-";
+    int hudDetections, hudDepthHits;
+    float hudTime;
+
+    void UpdateHud()
+    {
+        if (!showHud) { if (hud != null) hud.gameObject.SetActive(false); return; }
+        var cam = Camera.main;
+        if (cam == null) return;
+        if (hud == null)
+        {
+            var go = new GameObject("AprilTagHud");
+            hud = go.AddComponent<TextMesh>();
+            var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            hud.font = font;
+            go.GetComponent<MeshRenderer>().sharedMaterial = font.material;
+            hud.fontSize = 48;
+            hud.characterSize = 0.0025f;
+            hud.anchor = TextAnchor.UpperCenter;
+            hud.color = Color.yellow;
+        }
+        if (hud.transform.parent != cam.transform)
+        {
+            hud.transform.SetParent(cam.transform, false);
+            hud.transform.localPosition = new Vector3(0f, -0.13f, 0.6f);
+            hud.transform.localRotation = Quaternion.identity;
+        }
+        hud.gameObject.SetActive(true);
+
+        float el = Time.time - hudTime;
+        if (el < 0.5f) return;
+        hud.text = $"TAG {(IsTracking ? "SEEN" : "LOST")}  det {hudDetections / el:F0}/s\n" +
+                   $"DEPTH {hudDepthHits / el:F0}/s  ratio x{depthRatio:F2}  {hudDepth}";
+        hudDetections = 0; hudDepthHits = 0; hudTime = Time.time;
     }
 
     // 깊이 센서가 알려준 실제 태그 크기 (흰 네모 한 변, m)

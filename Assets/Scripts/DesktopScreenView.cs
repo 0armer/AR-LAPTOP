@@ -87,7 +87,9 @@ public class DesktopScreenView : MonoBehaviour
 
         // AprilTag 고정 배치 모드면, 태그가 안 보이는 동안(lostTimeout 넘게) 화면을 숨긴다 (엉뚱한 자리에 남지 않게)
         var tag = AprilTagFollower.Instance;
-        screenRenderer.enabled = tag == null || !tag.fixedLayout || tag.IsTracking;
+        bool vis = tag == null || !tag.fixedLayout || tag.IsTracking;
+        screenRenderer.enabled = vis;
+        SetPlaneVisible(vis);
 
         // 보는 사람 쪽으로 살짝 띄운다. 판의 z 스케일이 1이 아니라서 로컬 값으로 환산.
         var cam = Camera.main;
@@ -98,6 +100,31 @@ public class DesktopScreenView : MonoBehaviour
         screen.localPosition = new Vector3(0f, 0f, side * frontOffset / zs);
         screen.localRotation = Quaternion.identity;
         screen.localScale = Vector3.one;
+    }
+
+    // 판 자체와 판에 붙은 다른 것(테두리 등)도 같이 숨기고, 숨긴 동안은 레이도 안 맞게 콜라이더도 끈다.
+    // 원래 꺼져 있던 건 원래대로 둔다.
+    readonly System.Collections.Generic.Dictionary<Renderer, bool> planeRenderers = new();
+    readonly System.Collections.Generic.Dictionary<Collider, bool> planeColliders = new();
+    bool planeVisible = true;
+
+    void SetPlaneVisible(bool vis)
+    {
+        if (vis == planeVisible) return;
+        if (!vis)
+        {
+            planeRenderers.Clear(); planeColliders.Clear();
+            foreach (var r in plane.GetComponentsInChildren<Renderer>(true))
+                if (r != screenRenderer) { planeRenderers[r] = r.enabled; r.enabled = false; }
+            foreach (var c in plane.GetComponentsInChildren<Collider>(true))
+                { planeColliders[c] = c.enabled; c.enabled = false; }
+        }
+        else
+        {
+            foreach (var kv in planeRenderers) if (kv.Key != null) kv.Key.enabled = kv.Value;
+            foreach (var kv in planeColliders) if (kv.Key != null) kv.Key.enabled = kv.Value;
+        }
+        planeVisible = vis;
     }
 
     Transform FindPlane()
