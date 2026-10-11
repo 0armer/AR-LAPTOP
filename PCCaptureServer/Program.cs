@@ -692,7 +692,10 @@ class Program
                             scaled = new Bitmap(nw, nh, PixelFormat.Format32bppRgb);
                             using (var g3 = Graphics.FromImage(scaled))
                             {
-                                g3.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                                g3.InterpolationMode = InterpolationMode.Bilinear;     // HighQuality는 느려서 초당 장수가 떨어짐
+                                g3.CompositingQuality = CompositingQuality.HighSpeed;
+                                g3.CompositingMode = CompositingMode.SourceCopy;
+                                g3.PixelOffsetMode = PixelOffsetMode.HighSpeed;
                                 g3.DrawImage(bmp, 0, 0, nw, nh);
                             }
                             send = scaled;

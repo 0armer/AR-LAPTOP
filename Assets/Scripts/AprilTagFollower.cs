@@ -232,10 +232,31 @@ public class AprilTagFollower : MonoBehaviour
     }
 
     // ── 영상 받기 → 태그 찾기 ───────────────────────────────────────────────
+    // ── 백그라운드 태그 찾기 ─────────────────────────────────────────────────
+    // 예전엔 태그 찾기를 메인 스레드에서 해서, 카메라 한 장마다 헤드셋 화면이 그만큼 멈췄다(전체가 끊겨 보임).
+    // 이제: 영상 복사만 메인에서 → 찾기는 백그라운드 → 결과(위치 계산·깊이 센서)는 다시 메인에서.
+    struct DetectJob
+    {
+        public int w, h;
+        public float fx, fy, cx, cy;
+        public Pose camPose;
+        public TagPose[] tags;
+        public double ms;
+    }
+    Color32[] imgBuf;
+    volatile bool bgBusy;
+    DetectJob? bgResult;
+    readonly object bgLock = new object();
+
     void Update()
     {
+        // 백그라운드 결과가 왔으면 메인 스레드에서 마저 처리
+        DetectJob? res = null;
+        lock (bgLock) { if (bgResult.HasValue) { res = bgResult; bgResult = null; } }
+        if (res.HasValue) { HandleDetections(res.Value); pending = false; }
+
         if (pca == null || !pca.isActiveAndEnabled || !pca.IsPlaying) return;
-        if (pending || !pca.IsUpdatedThisFrame) return;
+        if (pending || bgBusy || !pca.IsUpdatedThisFrame) return;
 
         var tex = pca.GetTexture();
         if (tex == null) return;
@@ -247,17 +268,17 @@ public class AprilTagFollower : MonoBehaviour
 
         AsyncGPUReadback.Request(tex, 0, TextureFormat.RGBA32, req =>
         {
-            pending = false;
-            if (req.hasError || this == null) return;
+            if (req.hasError || this == null) { pending = false; return; }
             var data = req.GetData<Color32>();
-            Detect(data, req.width, req.height, camPose, cur, intr);
+            if (!Detect(data, req.width, req.height, camPose, cur, intr)) pending = false;
         });
     }
 
-    void Detect(NativeArray<Color32> data, int w, int h, Pose camPose, Vector2Int cur,
+    // 영상을 복사해서 백그라운드로 넘긴다. 넘겼으면 true.
+    bool Detect(NativeArray<Color32> data, int w, int h, Pose camPose, Vector2Int cur,
                 PassthroughCameraAccess.CameraIntrinsics intr)
     {
-        if (data.Length < w * h) return;
+        if (data.Length < w * h) return false;
         if (detector == null || detW != w || detH != h)
         {
             detector?.Dispose();
@@ -278,22 +299,45 @@ public class AprilTagFollower : MonoBehaviour
         float cy = (intr.PrincipalPoint.y - cropOrigin.y) * k;
         float fovY = 2f * Mathf.Atan(h * 0.5f / fy);            // keijiro는 세로 시야각(라디안)을 받는다
 
+        if (imgBuf == null || imgBuf.Length != w * h) imgBuf = new Color32[w * h];
         var span = data.AsReadOnlySpan().Slice(0, w * h);
-        Color32[] flipped = null;
         if (flipVertical)
-        {
-            flipped = new Color32[w * h];
             for (int y = 0; y < h; y++)
-                span.Slice((h - 1 - y) * w, w).CopyTo(new Span<Color32>(flipped, y * w, w));
-        }
+                span.Slice((h - 1 - y) * w, w).CopyTo(new Span<Color32>(imgBuf, y * w, w));
+        else span.CopyTo(imgBuf);
 
-        var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-        if (flipped != null) detector.ProcessImage(flipped, fovY, tagSize);
-        else detector.ProcessImage(span, fovY, tagSize);
-        statMs += (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        var job = new DetectJob { w = w, h = h, fx = fx, fy = fy, cx = cx, cy = cy, camPose = camPose };
+        var det = detector;
+        var buf = imgBuf;
+        float size = tagSize;
+        bgBusy = true;
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                det.ProcessImageNoJobs(buf, fovY, size);
+                job.tags = new System.Collections.Generic.List<TagPose>(det.DetectedTags).ToArray();
+                job.ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            }
+            catch (Exception e) { Debug.LogWarning("[AprilTag] 태그 찾기 오류: " + e.Message); job.tags = Array.Empty<TagPose>(); }
+            lock (bgLock) bgResult = job;
+            bgBusy = false;
+        });
+        return true;
+    }
+
+    // 백그라운드 결과 → 판 위치 (메인 스레드: 깊이 센서·Transform은 메인에서만 쓸 수 있음)
+    void HandleDetections(DetectJob r)
+    {
+        int w = r.w, h = r.h;
+        float fx = r.fx, fy = r.fy, cx = r.cx, cy = r.cy;
+        Pose camPose = r.camPose;
+        statMs += r.ms;
         statFrames++;
+        hudDetectMs = Mathf.Lerp(hudDetectMs, (float)r.ms, 0.2f);
 
-        foreach (var tag in detector.DetectedTags)
+        foreach (var tag in r.tags)
         {
             if (tag.ID != tagId) continue;
 
@@ -510,6 +554,8 @@ public class AprilTagFollower : MonoBehaviour
 
     // ── 시야 아래 상태 글자 (영어: 헤드셋 기본 글꼴에 한글이 없을 수 있음) ──
     TextMesh hud;
+    float hudDetectMs, hudFps = 72f;
+    long hudRx0, hudShown0;
     string hudDepth = "-";
     int hudDetections, hudDepthHits;
     float hudTime;
@@ -539,9 +585,16 @@ public class AprilTagFollower : MonoBehaviour
         }
         hud.gameObject.SetActive(true);
 
+        hudFps = Mathf.Lerp(hudFps, 1f / Mathf.Max(Time.unscaledDeltaTime, 1e-3f), 0.05f);
         float el = Time.time - hudTime;
         if (el < 0.5f) return;
-        hud.text = $"TAG {(IsTracking ? "SEEN" : "LOST")}{(locked ? " LOCK" : "")}  det {hudDetections / el:F0}/s  tag {EffectiveTagSize * 100f:F1}cm\n" +
+        var hub = WindowCaptureHub.Instance;
+        long rx = WindowCaptureHub.DesktopRx, shown = WindowCaptureHub.DesktopShown;
+        string stream = hub == null ? "no hub" : (!hub.IsConnected ? "8081 NOT CONNECTED" :
+            $"rx {(rx - hudRx0) / el:F0}/s  show {(shown - hudShown0) / el:F0}/s  decode {WindowCaptureHub.DecodeMs:F0}ms");
+        hudRx0 = rx; hudShown0 = shown;
+        hud.text = $"APP {hudFps:F0}fps  tagFind {hudDetectMs:F0}ms (bg)  STREAM {stream}\n" +
+                   $"TAG {(IsTracking ? "SEEN" : "LOST")}{(locked ? " LOCK" : "")}  det {hudDetections / el:F0}/s  tag {EffectiveTagSize * 100f:F1}cm\n" +
                    $"DEPTH {hudDepthHits / el:F0}/s  ratio x{depthRatio:F2}  {hudDepth}";
         hudDetections = 0; hudDepthHits = 0; hudTime = Time.time;
     }

@@ -59,6 +59,33 @@ public sealed class TagDetector : System.IDisposable
         RunDetectorAndEstimator(fov, tagSize);
     }
 
+    // [AR LAPTOP] 백그라운드 스레드에서 불러도 되는 버전.
+    // 원래 ProcessImage는 자세 계산을 Unity Job으로 돌리는데, Job은 메인 스레드에서만 예약할 수 있다.
+    // 그래서 자세 계산을 이 스레드에서 직접 돌린다(태그 1~2개라 Job으로 나눌 이득도 없음).
+    // 이렇게 하면 태그 찾기 전체를 메인 스레드 밖으로 빼서 헤드셋 화면이 안 끊긴다.
+    public void ProcessImageNoJobs
+      (ReadOnlySpan<Color32> image, float fov, float tagSize)
+    {
+        ImageConverter.Convert(image, _image);
+        _profileData = null;
+
+        using var tags = _detector.Detect(_image);
+        var tagCount = tags.Length;
+
+        using var input = new NativeArray<PoseEstimationJob.Input>
+          (tagCount, Allocator.Persistent);
+        var slice = new NativeSlice<PoseEstimationJob.Input>(input);
+        for (var i = 0; i < tagCount; i++)
+            slice[i] = new PoseEstimationJob.Input(ref tags[i]);
+
+        using var output = new NativeArray<TagPose>(tagCount, Allocator.Persistent);
+        var job = new PoseEstimationJob
+          (input, output, _image.Width, _image.Height, fov, tagSize);
+        for (var i = 0; i < tagCount; i++) job.Execute(i);
+
+        output.CopyTo(_detectedTags);
+    }
+
     #endregion
 
     #region Private objects

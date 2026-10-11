@@ -51,6 +51,9 @@ public class WindowCaptureHub : MonoBehaviour
     [Tooltip("한 프레임에 풀 수 있는 이미지 수 (많으면 프레임이 끊김)")]
     public int maxDecodesPerFrame = 2;
     readonly List<long> order = new();
+    // 상태 표시용 (AprilTagFollower 노란 글자): 데스크탑 화면 받은 수 / 보여준 수 / 한 장 푸는 시간
+    public static long DesktopRx, DesktopShown;
+    public static float DecodeMs;
     int rr;
 
     void Awake()
@@ -187,6 +190,7 @@ public class WindowCaptureHub : MonoBehaviour
                         byte[] jpeg = new byte[payload.Length - 8];
                         Array.Copy(payload, 8, jpeg, 0, jpeg.Length);
                         latestFrames[id] = jpeg;
+                        if (id == -1) Interlocked.Increment(ref DesktopRx);
                     }
                 }
             }
@@ -215,12 +219,19 @@ public class WindowCaptureHub : MonoBehaviour
             latestFrames[id] = null; // 소비
             if (!staging.TryGetValue(id, out var tex) || tex == null) continue;
 
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             if (tex.LoadImage(jpeg, false))
             {
                 var rt = EnsureDisplay(id, tex.width, tex.height);
                 Graphics.Blit(tex, rt);
                 var rend = registered[id];
                 if (rend != null && rend.material.mainTexture != rt) rend.material.mainTexture = rt;
+                if (id == -1)
+                {
+                    DesktopShown++;
+                    float ms = (float)((System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+                    DecodeMs = Mathf.Lerp(DecodeMs, ms, 0.2f);
+                }
             }
             done++;
         }
