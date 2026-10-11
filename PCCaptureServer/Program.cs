@@ -729,7 +729,9 @@ class Program
                 catch (Exception ex) { Console.WriteLine($"[데스크탑 화면] 캡처 오류: {ex.Message}"); }
             }
             int wait = DesktopIntervalMs - (int)(Environment.TickCount64 - t0);
-            await desktopKick.WaitAsync(Math.Max(1, wait));   // 클릭하면 기다리지 않고 바로 다음 장
+            if (wait > 0) await desktopKick.WaitAsync(wait);   // 클릭하면 기다리지 않고 바로 다음 장
+            int gap = 20 - (int)(Environment.TickCount64 - t0);
+            if (gap > 0) await Task.Delay(gap);                 // 그래도 최소 20ms 간격 (CPU 과부하 방지)
         }
     }
 
@@ -868,7 +870,8 @@ class Program
             int mon = parts.Length >= 4 ? int.Parse(parts[3]) : 0;
             MapToMonitor(mon, u, v, out int x, out int y);
 
-            if (type == "down" || type == "move" || type == "up" || type == "hover") KickDesktop();
+            // 누르기/떼기 때만 바로 찍는다. 움직일 때마다 찍으면 서버가 캡처만 하다가 버벅인다.
+            if (type == "down" || type == "up") KickDesktop();
 
             switch (type)
             {

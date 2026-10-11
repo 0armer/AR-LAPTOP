@@ -37,8 +37,14 @@ public class FingerTouch : MonoBehaviour
     [Tooltip("움직임 전송 빈도(Hz)")]
     public float sendRate = 60f;
 
-    [Tooltip("손가락이 화면 위 이 거리(m) 안에 떠 있으면 마우스 커서가 손가락을 따라온다 (클릭은 안 함)")]
+    [Tooltip("손가락이 화면 위에 떠 있기만 해도 커서를 따라오게 할지. 손 떨림이 커서에 그대로 들어가서 기본은 끔")]
+    public bool hoverCursor = false;
+    [Tooltip("hoverCursor를 켰을 때: 화면 위 이 거리(m) 안이면 커서가 따라옴")]
     public float hoverDistance = 0.05f;
+    [Tooltip("오른손 검지만 터치에 씀 (왼손은 터치 안 함)")]
+    public bool rightHandOnly = true;
+    [Tooltip("데스크탑을 누른 뒤 이만큼(m) 움직여야 드래그 시작. 그 전까진 커서를 안 움직여서 손 떨림으로 클릭이 드래그로 바뀌지 않음")]
+    public float dragStartMove = 0.012f;
 
     [Header("꺼낸 창")]
     [Tooltip("이보다 적게(m) 움직이고 떼면 클릭")]
@@ -59,6 +65,7 @@ public class FingerTouch : MonoBehaviour
         public float scrollAccum;   // 아직 안 보낸 스크롤(m)
         public float lastY;
         public bool scrolled;
+        public bool dragging;
     }
 
     readonly Dictionary<HandRayPointer, TouchState> states = new();
@@ -78,14 +85,15 @@ public class FingerTouch : MonoBehaviour
             if (p == null) continue;
             if (!states.TryGetValue(p, out var st)) { st = new TouchState(); states[p] = st; }
 
-            Transform tip = touchEnabled && p.IsHandTracked ? IndexTip(p) : null;
+            bool allowed = touchEnabled && p.IsHandTracked && !(rightHandOnly && IsLeft(p));
+            Transform tip = allowed ? IndexTip(p) : null;
             if (tip == null || pc == null || !pc.IsConnected) { Release(st, pc, false); continue; }
 
             if (st.down) Continue(st, tip.position, pc);
             else
             {
                 TryBegin(st, tip.position, pc);
-                if (!st.down) Hover(st, tip.position, pc);
+                if (!st.down && hoverCursor) Hover(st, tip.position, pc);
             }
         }
     }
@@ -97,11 +105,9 @@ public class FingerTouch : MonoBehaviour
         float bestAbs = float.MaxValue;
         Vector3 bestLocal = default;
 
-        if (DesktopVisible())   // 태그가 안 보여서 화면 판이 숨겨졌으면 터치 안 함
-            foreach (var mp in FindObjectsByType<MonitorPlane>(FindObjectsSortMode.None))
-                Consider(mp.transform, tip, ref best, ref bestAbs, ref bestLocal);
-        foreach (var w in FindObjectsByType<WindowQuadReceiver>(FindObjectsSortMode.None))
-            Consider(w.transform, tip, ref best, ref bestAbs, ref bestLocal);
+        // 화면 판(태그가 안 보이면 빠짐) + 꺼낸 창. 목록은 프레임당 한 번만 찾는다.
+        foreach (var sf in Surfaces())
+            Consider(sf.t, tip, ref best, ref bestAbs, ref bestLocal);
 
         if (best == null) return;
         float d = SignedDepth(best, tip);
@@ -119,6 +125,7 @@ public class FingerTouch : MonoBehaviour
         st.lastY = bestLocal.y * best.lossyScale.y;
         st.scrollAccum = 0f;
         st.scrolled = false;
+        st.dragging = false;
         st.lastSend = Time.time;
 
         if (st.isDesktop)
@@ -159,6 +166,13 @@ public class FingerTouch : MonoBehaviour
 
         if (st.isDesktop)
         {
+            // 떨림 방지: 일정 거리 움직이기 전까지는 누른 자리 그대로 (클릭이 드래그로 안 바뀜)
+            if (!st.dragging)
+            {
+                Vector3 dm = local - st.startLocal; dm.z = 0f;
+                if (Vector3.Scale(dm, st.target.lossyScale).magnitude < dragStartMove) return;
+                st.dragging = true;
+            }
             if (Time.time - st.lastSend >= 1f / Mathf.Max(1f, sendRate) && (uv - st.lastUV).sqrMagnitude > 1e-7f)
             {
                 pc.SendText(string.Format("move,{0:F4},{1:F4},{2}", uv.x, uv.y, st.monitorIndex));
@@ -269,6 +283,15 @@ public class FingerTouch : MonoBehaviour
             if (d < best) best = d;
         }
         return best;
+    }
+
+    static bool IsLeft(HandRayPointer p)
+    {
+        var sk = p.skeleton;
+        if (sk == null && p.hand != null) sk = p.hand.GetComponent<OVRSkeleton>();
+        if (sk == null) return false;
+        var t = sk.GetSkeletonType();
+        return t == OVRSkeleton.SkeletonType.HandLeft || t == OVRSkeleton.SkeletonType.XRHandLeft;
     }
 
     public static Transform IndexTip(HandRayPointer p)
