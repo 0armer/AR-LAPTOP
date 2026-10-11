@@ -328,16 +328,16 @@ public class AprilTagFollower : MonoBehaviour
     }
 
     // 백그라운드 결과 → 판 위치 (메인 스레드: 깊이 센서·Transform은 메인에서만 쓸 수 있음)
-    void HandleDetections(DetectJob r)
+    void HandleDetections(DetectJob dj)
     {
-        int w = r.w, h = r.h;
-        float fx = r.fx, fy = r.fy, cx = r.cx, cy = r.cy;
-        Pose camPose = r.camPose;
-        statMs += r.ms;
+        int w = dj.w, h = dj.h;
+        float fx = dj.fx, fy = dj.fy, cx = dj.cx, cy = dj.cy;
+        Pose camPose = dj.camPose;
+        statMs += dj.ms;
         statFrames++;
-        hudDetectMs = Mathf.Lerp(hudDetectMs, (float)r.ms, 0.2f);
+        hudDetectMs = Mathf.Lerp(hudDetectMs, (float)dj.ms, 0.2f);
 
-        foreach (var tag in r.tags)
+        foreach (var tag in dj.tags)
         {
             if (tag.ID != tagId) continue;
 
