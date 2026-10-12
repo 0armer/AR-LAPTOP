@@ -141,7 +141,14 @@ public class FingerTouch : MonoBehaviour
             Transform tip = allowed ? IndexTip(p) : null;
             st.diag = DiagSkeleton(p) + (allowed ? "" : $" notAllowed(tracked={p.IsHandTracked})")
                     + (tip == null ? " noTip" : "") + (pc == null ? " noPC" : (!pc.IsConnected ? " pcOff" : ""));
-            if (tip == null || pc == null || !pc.IsConnected) { Release(st, pc, false); st.pointing = false; st.blocked = false; ShowSphere(p, st, null); continue; }
+            if (tip == null || pc == null || !pc.IsConnected)
+            {
+                Release(st, pc, false); st.pointing = false; st.blocked = false;
+                // 진단: 손가락은 있는데 PC(8080)가 안 붙었으면 보라색 구체
+                Transform anyTip = p.IsHandTracked ? IndexTip(p) : null;
+                ShowSphere(p, st, anyTip, anyTip != null ? purpleNoPC : (Color?)null);
+                continue;
+            }
 
             // 손 모양 읽기 → 가리키기인지 / 종이를 잡고 있는지 / 노트북을 옮기는 중인지
             var hs = ReadShape(p);
@@ -240,9 +247,15 @@ public class FingerTouch : MonoBehaviour
     }
 
     // ── 검지 끝 구체: 가리키기면 파랑, 맞추는 중 노랑, 닿으면 빨강 ─────────────
-    void ShowSphere(HandRayPointer p, TouchState st, Transform tip)
+    static readonly Color purpleNoPC = new Color(0.7f, 0.2f, 1f);
+    static readonly Color idleGray = new Color(0.75f, 0.75f, 0.75f);
+    static readonly Color blockedOrange = new Color(1f, 0.55f, 0f);
+
+    // 진단용 색: 회색 = 손가락은 보이는데 가리키기 아님 / 파랑 = 가리키기 / 주황 = 잡기·이동으로 막힘
+    //           노랑 = 깊이 맞추는 중 / 빨강 = 누르는 중 / 보라 = PC 서버(8080) 연결 안 됨
+    void ShowSphere(HandRayPointer p, TouchState st, Transform tip, Color? force = null)
     {
-        bool show = showTipSphere && tip != null && (st.pointing || st.down);
+        bool show = showTipSphere && tip != null;
         if (!show) { if (st.sphere != null) st.sphere.gameObject.SetActive(false); return; }
         if (st.sphere == null)
         {
@@ -265,7 +278,12 @@ public class FingerTouch : MonoBehaviour
         st.sphere.gameObject.SetActive(true);
         st.sphere.position = tip.position;
         st.sphere.localScale = Vector3.one * tipSphereSize;
-        Color c = st.down ? touchColor : (st.fitProgress > 0.15f || FitActive) ? Color.Lerp(pointColor, fitColor, Mathf.Max(st.fitProgress, 0.5f)) : pointColor;
+        Color c = force ?? (st.down ? touchColor
+                : st.blocked ? blockedOrange
+                : !st.pointing ? idleGray
+                : (st.fitProgress > 0.15f || FitActive) ? Color.Lerp(pointColor, fitColor, Mathf.Max(st.fitProgress, 0.5f))
+                : pointColor);
+        st.sphere.localScale = Vector3.one * (st.pointing || st.down ? tipSphereSize : tipSphereSize * 0.6f);
         var mat = st.sphereR.sharedMaterial;
         if (mat != null)
         {
