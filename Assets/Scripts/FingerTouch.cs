@@ -59,6 +59,25 @@ public class FingerTouch : MonoBehaviour
     public float behindTolerance = 0.015f;
     [Tooltip("노트북(태그)이 움직이는 중이면 터치 꺼짐 (들고 옮기는 중)")]
     public bool blockWhileLaptopMoving = true;
+
+    [Header("검지 끝 표시 구체")]
+    [Tooltip("가리키기 모양일 때 검지 끝에 작은 구체를 띄움 (닿으면 빨간색)")]
+    public bool showTipSphere = true;
+    public float tipSphereSize = 0.012f;
+    public Color pointColor = new Color(0.2f, 0.85f, 1f);
+    public Color touchColor = Color.red;
+    public Color fitColor = Color.yellow;
+
+    [Header("손가락으로 판 면 맞추기")]
+    [Tooltip("판이 종이 뒤에 있어서 손가락이 판에 못 닿을 때: 종이를 가리키기로 누르고 이 시간(초) 가만히 있으면 판을 손가락 위치로 옮김")]
+    public float autoFitHold = 2f;
+    [Tooltip("자동 맞춤은 판이 손가락보다 이 거리(m) 안쪽 뒤에 있을 때만 (허공에서 멈춘 걸 오인하지 않게)")]
+    public float autoFitMaxGap = 0.05f;
+    [Tooltip("손가락이 이만큼(m) 넘게 움직이면 가만히 있는 시간 처음부터")]
+    public float fitStillMove = 0.004f;
+    static float fitUntil;   // 서버 'fit' 명령: 이 시각까지 아무 쪽(앞/뒤)이든 0.6초 누르면 맞춤
+    public static void BeginFit(float seconds = 8f) { fitUntil = Time.time + seconds; Debug.Log("[Touch] fit: 검지로 종이를 누르고 가만히"); }
+    public static bool FitActive => Time.time < fitUntil;
     [Tooltip("데스크탑을 누른 뒤 이만큼(m) 움직여야 드래그 시작. 그 전까진 커서를 안 움직여서 손 떨림으로 클릭이 드래그로 바뀌지 않음")]
     public float dragStartMove = 0.012f;
 
@@ -84,6 +103,11 @@ public class FingerTouch : MonoBehaviour
         public bool dragging;
         public bool pointing;
         public bool blocked;     // 잡기/이동 중이라 막힘
+        public Transform sphere;
+        public Renderer sphereR;
+        public Vector3 stillPos;
+        public float stillSince = -1f;
+        public float fitProgress;   // 0~1 (구체 색 표시용)
     }
 
     // 다른 스크립트(상태 글자 등)가 읽는 손별 상태
@@ -112,7 +136,7 @@ public class FingerTouch : MonoBehaviour
 
             bool allowed = touchEnabled && p.IsHandTracked && !(rightHandOnly && IsLeft(p));
             Transform tip = allowed ? IndexTip(p) : null;
-            if (tip == null || pc == null || !pc.IsConnected) { Release(st, pc, false); st.pointing = false; st.blocked = false; continue; }
+            if (tip == null || pc == null || !pc.IsConnected) { Release(st, pc, false); st.pointing = false; st.blocked = false; ShowSphere(p, st, null); continue; }
 
             // 손 모양 읽기 → 가리키기인지 / 종이를 잡고 있는지 / 노트북을 옮기는 중인지
             var hs = ReadShape(p);
@@ -122,17 +146,21 @@ public class FingerTouch : MonoBehaviour
             bool moving = blockWhileLaptopMoving && tagF != null && tagF.IsMoving;
             st.blocked = grip || moving;
 
+            // 손가락으로 판 면 맞추기 (누르는 중이 아닐 때만)
+            if (!st.down && st.pointing && !st.blocked && TryFit(st, tip.position)) { ShowSphere(p, st, tip); continue; }
+
             if (st.down)
             {
                 // 누르는 중엔 손 모양이 조금 무너져도 유지. 단, 잡기/이동이 감지되면 즉시 뗌
                 if (st.blocked) Release(st, pc, false);
                 else Continue(st, tip.position, pc);
             }
-            else if (!st.blocked && (!requirePointing || st.pointing))
+            else if (!st.blocked && (!requirePointing || st.pointing) && !FitActive)
             {
                 TryBegin(st, tip.position, pc);
                 if (!st.down && hoverCursor) Hover(st, tip.position, pc);
             }
+            ShowSphere(p, st, tip);
         }
     }
 
@@ -168,6 +196,77 @@ public class FingerTouch : MonoBehaviour
 
         if (st.isDesktop)
             pc.SendText(string.Format("down,{0:F4},{1:F4},{2}", st.lastUV.x, st.lastUV.y, st.monitorIndex));
+    }
+
+    // ── 손가락으로 판 면 맞추기 ─────────────────────────────────────────────
+    // 검지로 실제 종이를 누르고 가만히 있으면, 그 손가락 끝 = 진짜 종이 면. 판을 거기로 옮긴다.
+    bool TryFit(TouchState st, Vector3 tip)
+    {
+        st.fitProgress = 0f;
+        var tagF = AprilTagFollower.Instance;
+        if (tagF == null) return false;
+        Transform plane = null;
+        foreach (var s in Surfaces()) if (s.window == null && s.t != null) { plane = s.t; break; }
+        if (plane == null) { st.stillSince = -1f; return false; }
+
+        Vector3 local = plane.InverseTransformPoint(tip);
+        if (Mathf.Abs(local.x) > 0.5f || Mathf.Abs(local.y) > 0.5f) { st.stillSince = -1f; return false; }
+        float d = SignedDepth(plane, tip);   // + = 손가락이 판 앞(판이 종이 뒤에 있음)
+
+        bool manual = FitActive && Mathf.Abs(d) < 0.10f;
+        bool auto = !FitActive && d > touchOn + 0.001f && d < autoFitMaxGap;
+        if (!manual && !auto) { st.stillSince = -1f; return false; }
+
+        if (st.stillSince < 0f || Vector3.Distance(tip, st.stillPos) > fitStillMove)
+        {
+            st.stillPos = tip; st.stillSince = Time.time;
+            return manual;
+        }
+        float need = manual ? 0.6f : autoFitHold;
+        st.fitProgress = Mathf.Clamp01((Time.time - st.stillSince) / need);
+        if (st.fitProgress >= 1f)
+        {
+            tagF.AddSurfaceOffset(d);
+            fitUntil = 0f;
+            st.stillSince = -1f;
+            st.fitProgress = 0f;
+        }
+        return manual || st.fitProgress > 0.15f;   // 맞추는 중엔 터치 시작 안 함
+    }
+
+    // ── 검지 끝 구체: 가리키기면 파랑, 맞추는 중 노랑, 닿으면 빨강 ─────────────
+    void ShowSphere(HandRayPointer p, TouchState st, Transform tip)
+    {
+        bool show = showTipSphere && tip != null && (st.pointing || st.down);
+        if (!show) { if (st.sphere != null) st.sphere.gameObject.SetActive(false); return; }
+        if (st.sphere == null)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            go.name = "TipSphere";
+            Destroy(go.GetComponent<Collider>());   // 레이를 막지 않게
+            st.sphere = go.transform;
+            st.sphereR = go.GetComponent<Renderer>();
+            var lr = p.GetComponent<LineRenderer>();
+            Material m = lr != null && lr.sharedMaterial != null ? new Material(lr.sharedMaterial) : null;
+            if (m == null)
+            {
+                var sh = Shader.Find("Universal Render Pipeline/Unlit");
+                if (sh == null) sh = Shader.Find("Sprites/Default");
+                if (sh != null) m = new Material(sh);
+            }
+            if (m != null) st.sphereR.sharedMaterial = m;
+            st.sphereR.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        }
+        st.sphere.gameObject.SetActive(true);
+        st.sphere.position = tip.position;
+        st.sphere.localScale = Vector3.one * tipSphereSize;
+        Color c = st.down ? touchColor : (st.fitProgress > 0.15f || FitActive) ? Color.Lerp(pointColor, fitColor, Mathf.Max(st.fitProgress, 0.5f)) : pointColor;
+        var mat = st.sphereR.sharedMaterial;
+        if (mat != null)
+        {
+            if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", c);
+            if (mat.HasProperty("_Color")) mat.SetColor("_Color", c);
+        }
     }
 
     // ── 화면 위에 떠 있을 때: 커서만 손가락을 따라옴 ─────────────────────────

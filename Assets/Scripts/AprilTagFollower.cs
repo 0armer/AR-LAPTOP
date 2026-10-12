@@ -115,6 +115,9 @@ public class AprilTagFollower : MonoBehaviour
     public float liftFromSurface = 0.002f;
     [Tooltip("판을 보는 사람 쪽으로 당기는 거리(m). 판이 태그보다 뒤에 있어 보이면 +, 앞에 떠 보이면 -")]
     public float depthPull = 0f;
+    [Tooltip("판을 태그 면에서 보는 쪽으로 옮기는 거리(m). 손가락으로 종이를 눌러 자동으로 맞춤(fit). + = 앞으로")]
+    public float surfaceOffset = 0f;
+    bool forceSnap;
     [Tooltip("화면이 좌우로 뒤집혀 보이면 (0,180,0)")]
     public Vector3 rotationOffset = Vector3.zero;
 
@@ -474,7 +477,7 @@ public class AprilTagFollower : MonoBehaviour
         Vector3 local = new Vector3(
             -half + cornerOffset.x + quadWidth * 0.5f,
              half - cornerOffset.y - quadHeight * 0.5f,
-            -liftFromSurface);
+            -liftFromSurface - surfaceOffset);
         // 예측: 마지막 관측 이후 흐른 시간 + 처리 지연만큼 앞으로
         float ahead = predictSeconds > 0f ? Mathf.Min(Time.time - obsTime + predictSeconds, 0.2f) : 0f;
         Vector3 pPos = obsPos + velPos * ahead;
@@ -503,6 +506,12 @@ public class AprilTagFollower : MonoBehaviour
             plane.SetPositionAndRotation(targetPos, targetRot);   // 처음엔 바로 붙인다
             HasEverSeen = true;
             Debug.Log("[AprilTag] 태그 발견 → 판을 태그 오른쪽 아래로 붙임 (A4 크기)");
+            return;
+        }
+        if (forceSnap)   // 손가락으로 면을 맞춘 직후: 고정 상태 무시하고 바로 옮김
+        {
+            forceSnap = false; locked = false; unlockCount = 0; stillSince = -1f;
+            plane.SetPositionAndRotation(targetPos, targetRot);
             return;
         }
         float dist = Vector3.Distance(plane.position, targetPos);
@@ -655,6 +664,26 @@ public class AprilTagFollower : MonoBehaviour
         Debug.Log($"[AprilTag] 판 모서리 = 태그 모서리에서 오른쪽 {rightCm}cm, 아래 {downCm}cm");
     }
 
+    // 손가락 끝이 판에서 d(m) 앞에 있었다 = 실제 종이 면 → 판을 그만큼 옮긴다
+    public void AddSurfaceOffset(float d)
+    {
+        surfaceOffset += d;
+        PlayerPrefs.SetFloat(LayoutKey + "so", surfaceOffset);
+        PlayerPrefs.Save();
+        forceSnap = true;
+        Debug.Log($"[AprilTag] 손가락으로 면 맞춤: {d * 100f:F1}cm 이동 → 총 {surfaceOffset * 100f:F1}cm");
+        var pc = PCStreamReceiver.Instance;
+        if (pc != null && pc.IsConnected) pc.SendText($"msg,판 면 맞춤 {d * 100f:F1}cm 이동 (총 {surfaceOffset * 100f:F1}cm)");
+    }
+
+    public void ResetSurfaceOffset()
+    {
+        surfaceOffset = 0f;
+        PlayerPrefs.DeleteKey(LayoutKey + "so");
+        PlayerPrefs.Save();
+        forceSnap = true;
+    }
+
     public void SetDepthCm(float cm)
     {
         depthPull = cm / 100f;
@@ -687,6 +716,7 @@ public class AprilTagFollower : MonoBehaviour
         if (PlayerPrefs.HasKey(LayoutKey + "ox"))
             cornerOffset = new Vector2(PlayerPrefs.GetFloat(LayoutKey + "ox"), PlayerPrefs.GetFloat(LayoutKey + "oy"));
         if (PlayerPrefs.HasKey(LayoutKey + "dp")) depthPull = PlayerPrefs.GetFloat(LayoutKey + "dp");
+        if (PlayerPrefs.HasKey(LayoutKey + "so")) surfaceOffset = PlayerPrefs.GetFloat(LayoutKey + "so");
         if (PlayerPrefs.HasKey(LayoutKey + "ts")) tagSize = PlayerPrefs.GetFloat(LayoutKey + "ts");
         if (PlayerPrefs.HasKey(LayoutKey + "w"))
         {

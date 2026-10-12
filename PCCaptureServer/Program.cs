@@ -1343,6 +1343,8 @@ class Program
         Console.WriteLine("  │  size 29.7 21  판 크기 (가로/세로 cm)            │");
         Console.WriteLine("  │  depth 3     판을 눈 쪽으로 cm (뒤에 있어 보이면) │");
         Console.WriteLine("  │  tag 3       태그 흰 네모 한 변 cm               │");
+        Console.WriteLine("  │  fit         검지로 종이 눌러 판 깊이 맞추기      │");
+        Console.WriteLine("  │  fit 0       깊이 맞춘 값 지우기                  │");
         Console.WriteLine("  │  cap 1280 창 캡처 해상도 낮추기 (0 = 원본)       │");
         Console.WriteLine("  │  q 80     JPEG 품질                             │");
         Console.WriteLine("  │  Ctrl+C   종료 — 꺼낸 창 원래대로 복원          │");
@@ -1417,6 +1419,13 @@ class Program
                                                      : $"[판] 태그 크기값 {v1}cm (헤드셋에 저장됨)");
                     break;
                 }
+                // fit   → 8초 안에 검지로 종이를 누르고 가만히 → 판이 종이 면으로 이동
+                // fit 0 → 맞춘 값 지우기
+                case "fit":
+                    await SendToHeadset(arg.Trim() == "0" ? "study,fit,0" : "study,fit");
+                    Console.WriteLine(arg.Trim() == "0" ? "[판] 손가락 면 맞춤 값 지움"
+                                                        : "[판] 8초 안에 검지(가리키기)로 종이 화면을 누르고 가만히 있으세요");
+                    break;
                 case "cap":
                     if (arg.Length > 0 && int.TryParse(arg, out int px) && px >= 0) MaxCaptureSide = px;
                     Console.WriteLine($"[캡처] 최대 긴변 = {(MaxCaptureSide <= 0 ? "원본 그대로" : MaxCaptureSide + "px")} · 품질 = {JpegQualityVar}");

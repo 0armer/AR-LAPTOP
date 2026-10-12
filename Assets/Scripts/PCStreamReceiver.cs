@@ -208,6 +208,11 @@ public class PCStreamReceiver : MonoBehaviour
             string cmd = parts[1].Trim();
             if (cmd == "clear" && ConditionManager.Instance != null)
                 ConditionManager.Instance.ClearAllWindows();
+            else if (cmd == "fit")   // 손가락으로 판 면 맞추기 시작 / "fit,0"이면 맞춘 값 지우기
+            {
+                if (parts.Length >= 3 && parts[2].Trim() == "0") { if (AprilTagFollower.Instance != null) AprilTagFollower.Instance.ResetSurfaceOffset(); }
+                else FingerTouch.BeginFit(8f);
+            }
             else if ((cmd == "depth" || cmd == "tag") && parts.Length >= 3 && AprilTagFollower.Instance != null
                      && float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float one))
             {
