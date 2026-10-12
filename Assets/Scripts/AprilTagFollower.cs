@@ -48,7 +48,7 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("요청 해상도. 클수록 멀리서 잡히지만 느려진다")]
     public Vector2Int resolution = new Vector2Int(640, 480);
     [Tooltip("영상을 줄여서 찾는 배수. 1=정확·느림, 2=빠름·작은 태그 놓침")]
-    [Range(1, 4)] public int decimation = 2;
+    [Range(1, 4)] public int decimation = 1;   // [AR LAPTOP] 태그가 작아서(1.9cm) 줄이면 자주 놓침 → 원본 크기로 찾기 (백그라운드라 화면엔 영향 없음)
     [Tooltip("태그 위아래가 뒤집혀 잡히면(판이 거꾸로 움직이면) 켠다")]
     public bool flipVertical = false;
 
@@ -75,7 +75,7 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("고정 상태에서 이 각도(도) 넘게 어긋나야 움직인 걸로 본다")]
     public float unlockAngle = 4f;
     [Tooltip("연속 몇 번 어긋나야 고정을 풀지 (튀는 값 무시)")]
-    public int unlockFrames = 3;
+    public int unlockFrames = 2;
     [Tooltip("이 시간(초) 가만히 있으면 고정")]
     public float lockAfterStill = 0.25f;
     [Tooltip("한 번에 이 거리(m) 넘게 튀면 의심 (연속으로 나와야 인정)")]
@@ -83,7 +83,7 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("한 번에 이 각도(도) 넘게 튀면 의심")]
     public float outlierAngle = 15f;
     [Tooltip("튄 값이 연속 몇 번 나와야 진짜로 인정할지")]
-    public int outlierFrames = 4;
+    public int outlierFrames = 3;
     [Tooltip("손이 화면 가까이 있을 때(손이 태그를 가리기 쉬움) 고정을 풀기 어렵게 하는 배수")]
     public float nearHandLockFactor = 3f;
     int outlierStreak, hudOutliers;
@@ -532,7 +532,8 @@ public class AprilTagFollower : MonoBehaviour
         if (locked)
         {
             // 손이 화면 가까이 있으면(터치 중 등) 태그가 가려져 값이 흔들리기 쉬우므로 훨씬 단단히 고정
-            float f = AnyHandNear() ? nearHandLockFactor : 1f;
+            // 화면을 누르는 중에만(손이 태그를 가리기 쉬움) 더 단단히 고정. 그 외엔 바로 따라감
+            float f = FingerTouch.AnyTouchDown ? nearHandLockFactor : 1f;
             if (dist > unlockPosition * f || ang > unlockAngle * f)
             {
                 if (newObs) unlockCount++;
@@ -724,6 +725,14 @@ public class AprilTagFollower : MonoBehaviour
         if (PlayerPrefs.HasKey(LayoutKey + "ox"))
             cornerOffset = new Vector2(PlayerPrefs.GetFloat(LayoutKey + "ox"), PlayerPrefs.GetFloat(LayoutKey + "oy"));
         if (PlayerPrefs.HasKey(LayoutKey + "dp")) depthPull = PlayerPrefs.GetFloat(LayoutKey + "dp");
+        // 예전 면 맞춤 값은 태그 크기(3cm→1.95cm)와 손가락 두께 보정 전 값이라 한 번 지운다
+        if (PlayerPrefs.GetInt(LayoutKey + "so_v", 0) < 2)
+        {
+            PlayerPrefs.DeleteKey(LayoutKey + "so");
+            PlayerPrefs.DeleteKey(LayoutKey + "ts");
+            PlayerPrefs.SetInt(LayoutKey + "so_v", 2);
+            PlayerPrefs.Save();
+        }
         if (PlayerPrefs.HasKey(LayoutKey + "so")) surfaceOffset = PlayerPrefs.GetFloat(LayoutKey + "so");
         if (PlayerPrefs.HasKey(LayoutKey + "ts")) tagSize = PlayerPrefs.GetFloat(LayoutKey + "ts");
         if (PlayerPrefs.HasKey(LayoutKey + "w"))

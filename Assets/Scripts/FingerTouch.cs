@@ -27,9 +27,9 @@ public class FingerTouch : MonoBehaviour
     [Tooltip("끄면 터치 안 함")]
     public bool touchEnabled = true;
     [Tooltip("손가락 끝이 면에서 이 거리(m) 안으로 오면 닿은 것")]
-    public float touchOn = 0.005f;   // [AR LAPTOP] 실제로 닿았을 때 (손가락 끝 뼈는 피부 끝과 거의 같음)
+    public float touchOn = 0.012f;   // [AR LAPTOP] 손가락 끝 '뼈'는 손톱 안쪽(지문 면에서 약 8mm)이라, 종이에 닿으면 판에서 약 8mm → 12mm 안이면 닿음
     [Tooltip("이 거리(m) 밖으로 나가면 뗀 것")]
-    public float touchOff = 0.015f;
+    public float touchOff = 0.022f;
     [Tooltip("면 뒤로 이만큼(m) 넘게 들어가면 뗀 것으로 본다")]
     public float maxPenetration = 0.06f;
     [Tooltip("판 가장자리 바깥 여유 (판 크기 비율)")]
@@ -72,7 +72,9 @@ public class FingerTouch : MonoBehaviour
     [Tooltip("판이 종이 뒤에 있어서 손가락이 판에 못 닿을 때: 종이를 가리키기로 누르고 이 시간(초) 가만히 있으면 판을 손가락 위치로 옮김")]
     public float autoFitHold = 2f;
     [Tooltip("자동 맞춤은 판이 손가락보다 이 거리(m) 안쪽 뒤에 있을 때만 (허공에서 멈춘 걸 오인하지 않게)")]
-    public float autoFitMaxGap = 0.05f;
+    public float autoFitMaxGap = 0.08f;
+    [Tooltip("손가락 끝 뼈와 실제 손가락 지문 면 사이 거리(m). 면 맞춤 때 이만큼 빼서 판을 종이에 딱 붙인다")]
+    public float fingerPadOffset = 0.008f;
     [Tooltip("손가락이 이만큼(m) 넘게 움직이면 가만히 있는 시간 처음부터")]
     public float fitStillMove = 0.004f;
     static float fitUntil;   // 서버 'fit' 명령: 이 시각까지 아무 쪽(앞/뒤)이든 0.6초 누르면 맞춤
@@ -129,8 +131,14 @@ public class FingerTouch : MonoBehaviour
     }
     void OnDestroy() { if (Instance == this) Instance = null; }
 
+    // 지금 어느 손이든 화면을 누르고 있는지 (판 고정을 더 단단히 할 때 씀)
+    public static bool AnyTouchDown { get; private set; }
+
     void Update()
     {
+        bool anyDown = false;
+        foreach (var kv in states) if (kv.Value.down) { anyDown = true; break; }
+        AnyTouchDown = anyDown;
         var pc = PCStreamReceiver.Instance;
         foreach (var p in HandRayPointer.All)
         {
@@ -226,7 +234,7 @@ public class FingerTouch : MonoBehaviour
         float d = SignedDepth(plane, tip);   // + = 손가락이 판 앞(판이 종이 뒤에 있음)
 
         bool manual = FitActive && Mathf.Abs(d) < 0.10f;
-        bool auto = !FitActive && d > touchOn + 0.001f && d < autoFitMaxGap;
+        bool auto = !FitActive && d > touchOff && d < autoFitMaxGap;
         if (!manual && !auto) { st.stillSince = -1f; return false; }
 
         if (st.stillSince < 0f || Vector3.Distance(tip, st.stillPos) > fitStillMove)
@@ -238,7 +246,7 @@ public class FingerTouch : MonoBehaviour
         st.fitProgress = Mathf.Clamp01((Time.time - st.stillSince) / need);
         if (st.fitProgress >= 1f)
         {
-            tagF.AddSurfaceOffset(d);
+            tagF.AddSurfaceOffset(d - fingerPadOffset);   // 손가락 두께만큼 빼야 종이 면 (안 빼면 판이 종이 위로 뜸)
             fitUntil = 0f;
             st.stillSince = -1f;
             st.fitProgress = 0f;

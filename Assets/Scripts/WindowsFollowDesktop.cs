@@ -79,6 +79,7 @@ public class WindowsFollowDesktop : MonoBehaviour
     {
         foreach (var p in HandRayPointer.All)
             if (p != null && p.IsManipulating(q)) return true;
+        if (HandDirectGrab.IsHeld(q)) return true;   // 손으로 직접 잡은 창
         var two = q.GetComponent<TwoHandGrabResize>();
         return two != null && two.IsHeld;
     }
