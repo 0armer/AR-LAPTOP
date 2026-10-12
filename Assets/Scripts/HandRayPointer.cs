@@ -913,7 +913,7 @@ public class HandRayPointer : MonoBehaviour
     [Tooltip("켜면 화면 가까이에서는 레이를 끄고 검지로 직접 누른다")]
     public bool nearTouchMode = true;
     [Tooltip("검지 끝이 화면/창에서 이 거리(m) 안으로 오면 가까이 모드")]
-    public float nearEnter = 0.10f;
+    public float nearEnter = 0.10f;   // [AR LAPTOP] 10cm 안 = 레이·핀치·주먹 끄고 손 모양(가리키기) 터치만
     [Tooltip("이 거리(m) 밖으로 나가면 다시 레이 모드 (enter보다 크게 → 경계에서 깜빡이지 않음)")]
     public float nearExit = 0.15f;
     public bool IsNearMode { get; private set; }
@@ -942,33 +942,23 @@ public class HandRayPointer : MonoBehaviour
 
     void UpdateNearMode()
     {
-        // [AR LAPTOP] 왼손: 가까우면 무조건 비활성화 (잡는 중이어도 놓음)
-        if (leftHandOffWhenNear && IsLeftHand())
-        {
-            bool nearNow = IsNearMode;   // 손을 잠깐 놓치면 직전 상태 유지 (켜졌다 꺼졌다 방지)
-            if (hand != null && hand.IsTracked)
-            {
-                // 검지 끝과 손바닥 중 더 가까운 쪽으로, 화면/창 사각형까지 실제 거리를 잰다
-                var lt = FingerTouch.IndexTip(this);
-                float ld = FingerTouch.NearestRectDistance(hand.transform.position);
-                if (lt != null) ld = Mathf.Min(ld, FingerTouch.NearestRectDistance(lt.position));
-                nearNow = IsNearMode ? ld < leftNearExit : ld < leftNearEnter;
-            }
-            if (nearNow && !IsNearMode) ReleaseAllInteractions();
-            IsNearMode = nearNow;
-            return;
-        }
+        if (!nearTouchMode) { IsNearMode = false; return; }
 
-        bool busy = wasPinch || wasGrab || dragging || heldQuad != null || grabbedQuad != null;
-        if (!nearTouchMode || busy || hand == null || !hand.IsTracked)
+        // 꺼낸 창을 실제로 들고 옮기는 중이면(예: 데스크탑에 다시 넣으려고 가져오는 중) 끊지 않는다
+        bool holdingWindow = heldQuad != null || grabbedQuad != null || dragging;
+
+        bool nearNow = IsNearMode;   // 손을 잠깐 놓치면 직전 상태 유지 (켜졌다 꺼졌다 방지)
+        if (hand != null && hand.IsTracked)
         {
-            if (!busy) IsNearMode = false;
-            return;
+            // 검지 끝과 손 중 더 가까운 쪽 → 화면/창 사각형까지 실제 거리 (바로 위가 아니어도 잼)
+            var lt = FingerTouch.IndexTip(this);
+            float d = FingerTouch.NearestRectDistance(hand.transform.position);
+            if (lt != null) d = Mathf.Min(d, FingerTouch.NearestRectDistance(lt.position));
+            nearNow = IsNearMode ? d < nearExit : d < nearEnter;
         }
-        var tip = FingerTouch.IndexTip(this);
-        if (tip == null) { IsNearMode = false; return; }
-        float d = FingerTouch.NearestSurfaceDistance(tip.position);
-        IsNearMode = IsNearMode ? d < nearExit : d < nearEnter;
+        if (holdingWindow) nearNow = false;
+        if (nearNow && !IsNearMode) ReleaseAllInteractions();
+        IsNearMode = nearNow;
     }
 
     void ReleaseAllInteractions()
@@ -1086,15 +1076,30 @@ public class HandRayPointer : MonoBehaviour
         Transform tip = null;
         Transform wrist = null;
         var bones = skeleton.Bones;
+        // [AR LAPTOP] 버그 수정: 이 손은 XR 뼈대(번호 체계가 다름)라서 예전 이름(Hand_MiddleTip 등)으로 찾으면
+        // 엉뚱한 뼈(새끼손가락 뿌리)를 재고 있었다 → 검지만 들어도 주먹으로 인식되던 원인.
+        var st = skeleton.GetSkeletonType();
+        bool xr = st == OVRSkeleton.SkeletonType.XRHandLeft || st == OVRSkeleton.SkeletonType.XRHandRight;
+        var tipId = xr ? ToXR(tipBoneId) : tipBoneId;
+        var wristId = xr ? OVRSkeleton.BoneId.XRHand_Wrist : OVRSkeleton.BoneId.Hand_WristRoot;
         for (int i = 0; i < bones.Count; i++)
         {
-            if (bones[i].Id == tipBoneId) tip = bones[i].Transform;
-            else if (bones[i].Id == OVRSkeleton.BoneId.Hand_WristRoot) wrist = bones[i].Transform;
+            if (bones[i].Id == tipId) tip = bones[i].Transform;
+            else if (bones[i].Id == wristId) wrist = bones[i].Transform;
         }
         if (tip == null || wrist == null) return 0f;
 
         float dist = Vector3.Distance(tip.position, wrist.position);
         return Mathf.Clamp01(Mathf.InverseLerp(curlOpenDistance, curlClosedDistance, dist));
+    }
+
+    static OVRSkeleton.BoneId ToXR(OVRSkeleton.BoneId legacyTip)
+    {
+        if (legacyTip == OVRSkeleton.BoneId.Hand_MiddleTip) return OVRSkeleton.BoneId.XRHand_MiddleTip;
+        if (legacyTip == OVRSkeleton.BoneId.Hand_RingTip) return OVRSkeleton.BoneId.XRHand_RingTip;
+        if (legacyTip == OVRSkeleton.BoneId.Hand_PinkyTip) return OVRSkeleton.BoneId.XRHand_LittleTip;
+        if (legacyTip == OVRSkeleton.BoneId.Hand_IndexTip) return OVRSkeleton.BoneId.XRHand_IndexTip;
+        return legacyTip;
     }
 
     // 쿼드가 손 방향이 아니라 "사용자 머리 쪽"을 향하도록. 손 방향 기준으로 하면 손을

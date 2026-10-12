@@ -122,6 +122,10 @@ public class AprilTagFollower : MonoBehaviour
     public bool HasEverSeen { get; private set; }
     // 지금 태그가 보이는지 (마지막으로 본 지 lostTimeout 이내). 아니면 화면 판을 숨기고 터치도 막는다.
     public bool IsTracking => hasObs && Time.time - obsTime <= lostTimeout;
+    // 노트북(태그)이 움직이는 중인지 → 이 동안 터치 막음 (들고 옮기는 중)
+    [Tooltip("태그가 이 속도(m/s)보다 빠르면 '노트북 옮기는 중'으로 보고 터치를 막는다")]
+    public float movingSpeed = 0.06f;
+    public bool IsMoving => IsTracking && !locked && fVel.magnitude > movingSpeed;
 
     PassthroughCameraAccess pca;
 
@@ -625,7 +629,12 @@ public class AprilTagFollower : MonoBehaviour
         string stream = hub == null ? "no hub" : (!hub.IsConnected ? "8081 NOT CONNECTED" :
             $"rx {(rx - hudRx0) / el:F0}/s  show {(shown - hudShown0) / el:F0}/s  decode {WindowCaptureHub.DecodeMs:F0}ms");
         hudRx0 = rx; hudShown0 = shown;
-        hud.text = $"APP {hudFps:F0}fps  tagFind {hudDetectMs:F0}ms (bg)  STREAM {stream}\n" +
+        string hands = "";
+        var ft = FingerTouch.Instance;
+        foreach (var hp in HandRayPointer.All)
+            if (hp != null) hands += $"{(hp.IsLeftHand() ? "L" : "R")}:{(hp.IsNearMode ? "near " : "ray ")}{(ft != null ? ft.DebugState(hp) : "")}  ";
+        hud.text = $"HANDS {hands}{(IsMoving ? " LAPTOP-MOVING" : "")}\n" +
+                   $"APP {hudFps:F0}fps  tagFind {hudDetectMs:F0}ms (bg)  STREAM {stream}\n" +
                    $"TAG {(IsTracking ? "SEEN" : "LOST")}{(locked ? " LOCK" : "")}{(hudOutliers > 0 ? $" skip{hudOutliers}" : "")}  det {hudDetections / el:F0}/s  tag {EffectiveTagSize * 100f:F1}cm\n" +
                    $"DEPTH {hudDepthHits / el:F0}/s  ratio x{depthRatio:F2}  {hudDepth}";
         hudDetections = 0; hudDepthHits = 0; hudOutliers = 0; hudTime = Time.time;

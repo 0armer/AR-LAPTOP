@@ -42,7 +42,23 @@ public class FingerTouch : MonoBehaviour
     [Tooltip("hoverCursor를 켰을 때: 화면 위 이 거리(m) 안이면 커서가 따라옴")]
     public float hoverDistance = 0.05f;
     [Tooltip("오른손 검지만 터치에 씀 (왼손은 터치 안 함)")]
-    public bool rightHandOnly = true;
+    public bool rightHandOnly = false;   // [AR LAPTOP] 양손 다 같은 규칙(가리키기만 터치)
+
+    [Header("손 모양으로 의도 판단")]
+    [Tooltip("검지를 펴고 나머지 세 손가락을 접은 '가리키기' 모양일 때만 터치 시작")]
+    public bool requirePointing = true;
+    [Tooltip("검지가 이만큼 이상 펴져야 가리키기 (1 = 일자, 손가락 마디 길이 대비 끝까지 거리)")]
+    public float indexStraightOn = 0.90f;
+    [Tooltip("가리키기 유지 중엔 이 아래로 떨어져야 풀림 (떨림 방지)")]
+    public float indexStraightOff = 0.82f;
+    [Tooltip("중지·약지·새끼가 모두 이보다 덜 펴져야(=접혀야) 가리키기")]
+    public float othersCurledOn = 0.80f;
+    [Tooltip("가리키기 유지 중엔 셋 중 하나라도 이보다 펴지면 풀림")]
+    public float othersCurledOff = 0.88f;
+    [Tooltip("엄지·중지·약지·새끼 끝 중 하나라도 판 뒤로 이만큼(m) 넘어가 있으면 '종이를 잡고 있음' → 그 손 터치 꺼짐")]
+    public float behindTolerance = 0.015f;
+    [Tooltip("노트북(태그)이 움직이는 중이면 터치 꺼짐 (들고 옮기는 중)")]
+    public bool blockWhileLaptopMoving = true;
     [Tooltip("데스크탑을 누른 뒤 이만큼(m) 움직여야 드래그 시작. 그 전까진 커서를 안 움직여서 손 떨림으로 클릭이 드래그로 바뀌지 않음")]
     public float dragStartMove = 0.012f;
 
@@ -66,6 +82,15 @@ public class FingerTouch : MonoBehaviour
         public float lastY;
         public bool scrolled;
         public bool dragging;
+        public bool pointing;
+        public bool blocked;     // 잡기/이동 중이라 막힘
+    }
+
+    // 다른 스크립트(상태 글자 등)가 읽는 손별 상태
+    public string DebugState(HandRayPointer p)
+    {
+        if (!states.TryGetValue(p, out var st)) return "-";
+        return st.down ? "TOUCH" : st.blocked ? "HOLD" : st.pointing ? "POINT" : "idle";
     }
 
     readonly Dictionary<HandRayPointer, TouchState> states = new();
@@ -87,10 +112,23 @@ public class FingerTouch : MonoBehaviour
 
             bool allowed = touchEnabled && p.IsHandTracked && !(rightHandOnly && IsLeft(p));
             Transform tip = allowed ? IndexTip(p) : null;
-            if (tip == null || pc == null || !pc.IsConnected) { Release(st, pc, false); continue; }
+            if (tip == null || pc == null || !pc.IsConnected) { Release(st, pc, false); st.pointing = false; st.blocked = false; continue; }
 
-            if (st.down) Continue(st, tip.position, pc);
-            else
+            // 손 모양 읽기 → 가리키기인지 / 종이를 잡고 있는지 / 노트북을 옮기는 중인지
+            var hs = ReadShape(p);
+            UpdatePointing(st, hs);
+            bool grip = hs.valid && FingersBehindSurface(hs);
+            var tagF = AprilTagFollower.Instance;
+            bool moving = blockWhileLaptopMoving && tagF != null && tagF.IsMoving;
+            st.blocked = grip || moving;
+
+            if (st.down)
+            {
+                // 누르는 중엔 손 모양이 조금 무너져도 유지. 단, 잡기/이동이 감지되면 즉시 뗌
+                if (st.blocked) Release(st, pc, false);
+                else Continue(st, tip.position, pc);
+            }
+            else if (!st.blocked && (!requirePointing || st.pointing))
             {
                 TryBegin(st, tip.position, pc);
                 if (!st.down && hoverCursor) Hover(st, tip.position, pc);
@@ -286,6 +324,93 @@ public class FingerTouch : MonoBehaviour
     }
 
     static bool IsLeft(HandRayPointer p) => p.IsLeftHand();
+
+    // ── 손 모양 ─────────────────────────────────────────────────────────────
+    public struct HandShape
+    {
+        public bool valid;
+        public float index, middle, ring, little;   // 펴진 정도 (1 = 일자, 접을수록 작아짐)
+        public Vector3 thumbTip, middleTip, ringTip, littleTip;
+    }
+
+    static readonly Dictionary<OVRSkeleton.BoneId, Transform> boneMap = new();
+
+    public static HandShape ReadShape(HandRayPointer p)
+    {
+        var hs = new HandShape();
+        var sk = p.skeleton != null ? p.skeleton : (p.hand != null ? p.hand.GetComponent<OVRSkeleton>() : null);
+        if (sk == null || !sk.IsInitialized || sk.Bones == null) return hs;
+        boneMap.Clear();
+        foreach (var b in sk.Bones) if (b != null && b.Transform != null) boneMap[b.Id] = b.Transform;
+
+        var t = sk.GetSkeletonType();
+        bool xr = t == OVRSkeleton.SkeletonType.XRHandLeft || t == OVRSkeleton.SkeletonType.XRHandRight;
+        if (xr)
+        {
+            hs.index  = Straight(OVRSkeleton.BoneId.XRHand_IndexProximal,  OVRSkeleton.BoneId.XRHand_IndexIntermediate,  OVRSkeleton.BoneId.XRHand_IndexDistal,  OVRSkeleton.BoneId.XRHand_IndexTip);
+            hs.middle = Straight(OVRSkeleton.BoneId.XRHand_MiddleProximal, OVRSkeleton.BoneId.XRHand_MiddleIntermediate, OVRSkeleton.BoneId.XRHand_MiddleDistal, OVRSkeleton.BoneId.XRHand_MiddleTip);
+            hs.ring   = Straight(OVRSkeleton.BoneId.XRHand_RingProximal,   OVRSkeleton.BoneId.XRHand_RingIntermediate,   OVRSkeleton.BoneId.XRHand_RingDistal,   OVRSkeleton.BoneId.XRHand_RingTip);
+            hs.little = Straight(OVRSkeleton.BoneId.XRHand_LittleProximal, OVRSkeleton.BoneId.XRHand_LittleIntermediate, OVRSkeleton.BoneId.XRHand_LittleDistal, OVRSkeleton.BoneId.XRHand_LittleTip);
+            hs.valid = Pos(OVRSkeleton.BoneId.XRHand_ThumbTip, out hs.thumbTip) & Pos(OVRSkeleton.BoneId.XRHand_MiddleTip, out hs.middleTip)
+                     & Pos(OVRSkeleton.BoneId.XRHand_RingTip, out hs.ringTip) & Pos(OVRSkeleton.BoneId.XRHand_LittleTip, out hs.littleTip);
+        }
+        else
+        {
+            hs.index  = Straight(OVRSkeleton.BoneId.Hand_Index1,  OVRSkeleton.BoneId.Hand_Index2,  OVRSkeleton.BoneId.Hand_Index3,  OVRSkeleton.BoneId.Hand_IndexTip);
+            hs.middle = Straight(OVRSkeleton.BoneId.Hand_Middle1, OVRSkeleton.BoneId.Hand_Middle2, OVRSkeleton.BoneId.Hand_Middle3, OVRSkeleton.BoneId.Hand_MiddleTip);
+            hs.ring   = Straight(OVRSkeleton.BoneId.Hand_Ring1,   OVRSkeleton.BoneId.Hand_Ring2,   OVRSkeleton.BoneId.Hand_Ring3,   OVRSkeleton.BoneId.Hand_RingTip);
+            hs.little = Straight(OVRSkeleton.BoneId.Hand_Pinky1,  OVRSkeleton.BoneId.Hand_Pinky2,  OVRSkeleton.BoneId.Hand_Pinky3,  OVRSkeleton.BoneId.Hand_PinkyTip);
+            hs.valid = Pos(OVRSkeleton.BoneId.Hand_ThumbTip, out hs.thumbTip) & Pos(OVRSkeleton.BoneId.Hand_MiddleTip, out hs.middleTip)
+                     & Pos(OVRSkeleton.BoneId.Hand_RingTip, out hs.ringTip) & Pos(OVRSkeleton.BoneId.Hand_PinkyTip, out hs.littleTip);
+        }
+        hs.valid &= hs.index > 0f && hs.middle > 0f;
+        return hs;
+    }
+
+    static bool Pos(OVRSkeleton.BoneId id, out Vector3 p)
+    {
+        if (boneMap.TryGetValue(id, out var t)) { p = t.position; return true; }
+        p = default; return false;
+    }
+
+    // 손가락 첫 마디 → 끝까지 직선거리 ÷ 마디 길이 합. 일자면 1, 접을수록 작아짐 (손 크기와 무관)
+    static float Straight(OVRSkeleton.BoneId a, OVRSkeleton.BoneId b, OVRSkeleton.BoneId c, OVRSkeleton.BoneId d)
+    {
+        if (!Pos(a, out var pa) || !Pos(b, out var pb) || !Pos(c, out var pc) || !Pos(d, out var pd)) return 0f;
+        float seg = Vector3.Distance(pa, pb) + Vector3.Distance(pb, pc) + Vector3.Distance(pc, pd);
+        return seg > 1e-4f ? Vector3.Distance(pa, pd) / seg : 0f;
+    }
+
+    void UpdatePointing(TouchState st, HandShape hs)
+    {
+        if (!hs.valid) { st.pointing = false; return; }
+        float others = Mathf.Max(hs.middle, Mathf.Max(hs.ring, hs.little));
+        st.pointing = st.pointing
+            ? hs.index >= indexStraightOff && others <= othersCurledOff
+            : hs.index >= indexStraightOn && others <= othersCurledOn;
+    }
+
+    // 엄지·중지·약지·새끼 끝이 판 "뒤"에 있으면 = 종이/노트북을 쥐고 있는 것 (누를 땐 손 전체가 판 앞에 있음)
+    bool FingersBehindSurface(HandShape hs)
+    {
+        foreach (var s in Surfaces())
+        {
+            if (s.t == null || s.window != null) continue;   // 실제 종이가 있는 건 데스크탑 판뿐
+            if (Behind(s.t, hs.thumbTip) || Behind(s.t, hs.middleTip) || Behind(s.t, hs.ringTip) || Behind(s.t, hs.littleTip))
+                return true;
+        }
+        return false;
+    }
+
+    bool Behind(Transform t, Vector3 p)
+    {
+        Vector3 local = t.InverseTransformPoint(p);
+        Vector3 sc = t.lossyScale;
+        float mx = 0.5f + 0.03f / Mathf.Max(Mathf.Abs(sc.x), 1e-4f);
+        float my = 0.5f + 0.03f / Mathf.Max(Mathf.Abs(sc.y), 1e-4f);
+        if (Mathf.Abs(local.x) > mx || Mathf.Abs(local.y) > my) return false;
+        return SignedDepth(t, p) < -behindTolerance;
+    }
 
     // 점에서 화면/창 "사각형"까지의 실제 최단 거리(m). 면 바로 위가 아니어도(옆·아래·비스듬히) 잰다.
     public static float NearestRectDistance(Vector3 point)
