@@ -40,7 +40,7 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("따라갈 태그 ID")]
     public int tagId = 0;
     [Tooltip("검은 띠 안쪽 흰 네모 한 변(m). 5.4cm 태그 = 0.030, 7.2cm = 0.040")]
-    public float tagSize = 0.030f;
+    public float tagSize = 0.0195f;   // [AR LAPTOP] 깊이 센서로 잰 실제 인쇄 크기(약 1.9cm)
     [Tooltip("움직일 모니터 판 번호")]
     public int monitorIndex = 0;
 

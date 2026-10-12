@@ -264,15 +264,27 @@ public class FingerTouch : MonoBehaviour
             Destroy(go.GetComponent<Collider>());   // 레이를 막지 않게
             st.sphere = go.transform;
             st.sphereR = go.GetComponent<Renderer>();
-            var lr = p.GetComponent<LineRenderer>();
-            Material m = lr != null && lr.sharedMaterial != null ? new Material(lr.sharedMaterial) : null;
+            // 데스크탑 화면·꺼낸 창과 같은 머티리얼(URP Unlit)을 쓴다 — 헤드셋에서 확실히 보이는 것.
+            // (레이 선 머티리얼은 구체에 칠하면 안 보였음)
+            Material m = null;
+            if (p.spawnQuadPrefab != null)
+            {
+                var r = p.spawnQuadPrefab.GetComponent<Renderer>();
+                if (r != null && r.sharedMaterial != null) m = new Material(r.sharedMaterial);
+            }
             if (m == null)
             {
                 var sh = Shader.Find("Universal Render Pipeline/Unlit");
-                if (sh == null) sh = Shader.Find("Sprites/Default");
                 if (sh != null) m = new Material(sh);
             }
-            if (m != null) st.sphereR.sharedMaterial = m;
+            if (m != null)
+            {
+                m.mainTexture = null;
+                if (m.HasProperty("_BaseMap")) m.SetTexture("_BaseMap", null);
+                if (m.HasProperty("_Cull")) m.SetFloat("_Cull", 2f);
+                m.renderQueue = 3100;   // 화면 판보다 나중에 그려서 판 앞에서도 보이게
+                st.sphereR.sharedMaterial = m;
+            }
             st.sphereR.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         }
         st.sphere.gameObject.SetActive(true);
