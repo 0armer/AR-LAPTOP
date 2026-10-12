@@ -285,14 +285,7 @@ public class FingerTouch : MonoBehaviour
         return best;
     }
 
-    static bool IsLeft(HandRayPointer p)
-    {
-        var sk = p.skeleton;
-        if (sk == null && p.hand != null) sk = p.hand.GetComponent<OVRSkeleton>();
-        if (sk == null) return false;
-        var t = sk.GetSkeletonType();
-        return t == OVRSkeleton.SkeletonType.HandLeft || t == OVRSkeleton.SkeletonType.XRHandLeft;
-    }
+    static bool IsLeft(HandRayPointer p) => p.IsLeftHand();
 
     public static Transform IndexTip(HandRayPointer p)
     {

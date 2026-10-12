@@ -918,8 +918,42 @@ public class HandRayPointer : MonoBehaviour
     public float nearExit = 0.15f;
     public bool IsNearMode { get; private set; }
 
+    [Tooltip("왼손은 화면/창 가까이 오면 무조건 꺼짐 (레이·핀치·주먹 전부). 잡고 있던 것도 놓는다")]
+    public bool leftHandOffWhenNear = true;
+
+    public bool IsLeftHand()
+    {
+        var sk = skeleton != null ? skeleton : (hand != null ? hand.GetComponent<OVRSkeleton>() : null);
+        if (sk != null)
+        {
+            var t = sk.GetSkeletonType();
+            if (t == OVRSkeleton.SkeletonType.HandLeft || t == OVRSkeleton.SkeletonType.XRHandLeft) return true;
+            if (t == OVRSkeleton.SkeletonType.HandRight || t == OVRSkeleton.SkeletonType.XRHandRight) return false;
+        }
+        // 뼈대 정보가 없으면 오브젝트 이름으로 (LeftHandAnchor 밑 등)
+        for (var tr = hand != null ? hand.transform : transform; tr != null; tr = tr.parent)
+            if (tr.name.IndexOf("left", System.StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        return false;
+    }
+
     void UpdateNearMode()
     {
+        // [AR LAPTOP] 왼손: 가까우면 무조건 비활성화 (잡는 중이어도 놓음)
+        if (leftHandOffWhenNear && IsLeftHand())
+        {
+            bool nearNow = false;
+            if (hand != null && hand.IsTracked)
+            {
+                var lt = FingerTouch.IndexTip(this);
+                Vector3 at = lt != null ? lt.position : (hand.PointerPose != null ? hand.PointerPose.position : hand.transform.position);
+                float ld = FingerTouch.NearestSurfaceDistance(at);
+                nearNow = IsNearMode ? ld < nearExit : ld < nearEnter;
+            }
+            if (nearNow && !IsNearMode) ReleaseAllInteractions();
+            IsNearMode = nearNow;
+            return;
+        }
+
         bool busy = wasPinch || wasGrab || dragging || heldQuad != null || grabbedQuad != null;
         if (!nearTouchMode || busy || hand == null || !hand.IsTracked)
         {
