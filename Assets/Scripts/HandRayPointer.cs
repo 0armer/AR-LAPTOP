@@ -920,6 +920,10 @@ public class HandRayPointer : MonoBehaviour
 
     [Tooltip("왼손은 화면/창 가까이 오면 무조건 꺼짐 (레이·핀치·주먹 전부). 잡고 있던 것도 놓는다")]
     public bool leftHandOffWhenNear = true;
+    [Tooltip("왼손이 화면/창 사각형에서 이 거리(m) 안이면 꺼짐")]
+    public float leftNearEnter = 0.15f;
+    [Tooltip("이 거리(m) 밖으로 나가야 다시 켜짐")]
+    public float leftNearExit = 0.22f;
 
     public bool IsLeftHand()
     {
@@ -941,13 +945,14 @@ public class HandRayPointer : MonoBehaviour
         // [AR LAPTOP] 왼손: 가까우면 무조건 비활성화 (잡는 중이어도 놓음)
         if (leftHandOffWhenNear && IsLeftHand())
         {
-            bool nearNow = false;
+            bool nearNow = IsNearMode;   // 손을 잠깐 놓치면 직전 상태 유지 (켜졌다 꺼졌다 방지)
             if (hand != null && hand.IsTracked)
             {
+                // 검지 끝과 손바닥 중 더 가까운 쪽으로, 화면/창 사각형까지 실제 거리를 잰다
                 var lt = FingerTouch.IndexTip(this);
-                Vector3 at = lt != null ? lt.position : (hand.PointerPose != null ? hand.PointerPose.position : hand.transform.position);
-                float ld = FingerTouch.NearestSurfaceDistance(at);
-                nearNow = IsNearMode ? ld < nearExit : ld < nearEnter;
+                float ld = FingerTouch.NearestRectDistance(hand.transform.position);
+                if (lt != null) ld = Mathf.Min(ld, FingerTouch.NearestRectDistance(lt.position));
+                nearNow = IsNearMode ? ld < leftNearExit : ld < leftNearEnter;
             }
             if (nearNow && !IsNearMode) ReleaseAllInteractions();
             IsNearMode = nearNow;

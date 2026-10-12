@@ -287,6 +287,21 @@ public class FingerTouch : MonoBehaviour
 
     static bool IsLeft(HandRayPointer p) => p.IsLeftHand();
 
+    // 점에서 화면/창 "사각형"까지의 실제 최단 거리(m). 면 바로 위가 아니어도(옆·아래·비스듬히) 잰다.
+    public static float NearestRectDistance(Vector3 point)
+    {
+        float best = float.PositiveInfinity;
+        foreach (var s in Surfaces())
+        {
+            if (s.t == null) continue;
+            Vector3 local = s.t.InverseTransformPoint(point);
+            Vector3 onRect = new Vector3(Mathf.Clamp(local.x, -0.5f, 0.5f), Mathf.Clamp(local.y, -0.5f, 0.5f), 0f);
+            float d = Vector3.Distance(point, s.t.TransformPoint(onRect));
+            if (d < best) best = d;
+        }
+        return best;
+    }
+
     public static Transform IndexTip(HandRayPointer p)
     {
         var sk = p.skeleton;

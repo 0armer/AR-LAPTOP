@@ -78,6 +78,15 @@ public class AprilTagFollower : MonoBehaviour
     public int unlockFrames = 3;
     [Tooltip("이 시간(초) 가만히 있으면 고정")]
     public float lockAfterStill = 0.25f;
+    [Tooltip("한 번에 이 거리(m) 넘게 튀면 의심 (연속으로 나와야 인정)")]
+    public float outlierDistance = 0.05f;
+    [Tooltip("한 번에 이 각도(도) 넘게 튀면 의심")]
+    public float outlierAngle = 15f;
+    [Tooltip("튄 값이 연속 몇 번 나와야 진짜로 인정할지")]
+    public int outlierFrames = 4;
+    [Tooltip("손이 화면 가까이 있을 때(손이 태그를 가리기 쉬움) 고정을 풀기 어렵게 하는 배수")]
+    public float nearHandLockFactor = 3f;
+    int outlierStreak, hudOutliers;
     bool locked;
     int unlockCount;
     float stillSince = -1f, lockLastObs = -10f;
@@ -374,6 +383,20 @@ public class AprilTagFollower : MonoBehaviour
 
             Vector3 newPos = camPose.position + camPose.rotation * p;
             Quaternion newRot = camPose.rotation * tag.Rotation;
+
+            // 튀는 값 버리기: 작은 태그는 기울기가 순간적으로 수십 도 뒤집히는 일이 있다(자세 계산의 고질병).
+            // 직전과 크게 다른 값은 연속 outlierFrames번 같은 쪽으로 나와야 진짜 움직임으로 인정.
+            if (hasObs && Time.time - obsTime < 0.3f)
+            {
+                bool jump = Vector3.Distance(newPos, obsPos) > outlierDistance
+                         || Quaternion.Angle(newRot, obsRot) > outlierAngle;
+                if (jump)
+                {
+                    if (++outlierStreak < outlierFrames) { hudOutliers++; break; }
+                    fInit = false;           // 진짜 움직였음 → 필터를 새 위치에서 다시 시작
+                }
+                outlierStreak = 0;
+            }
             OneEuro(ref newPos, ref newRot);
             hudDetections++;
             float dtObs = Time.time - obsTime;
@@ -495,10 +518,12 @@ public class AprilTagFollower : MonoBehaviour
         // 측정값이 한두 번 튀는 건 무시하고, 연속 unlockFrames번 크게 어긋나야 "진짜 움직였다"고 보고 풀어준다.
         if (locked)
         {
-            if (dist > unlockPosition || ang > unlockAngle)
+            // 손이 화면 가까이 있으면(터치 중 등) 태그가 가려져 값이 흔들리기 쉬우므로 훨씬 단단히 고정
+            float f = AnyHandNear() ? nearHandLockFactor : 1f;
+            if (dist > unlockPosition * f || ang > unlockAngle * f)
             {
                 if (newObs) unlockCount++;
-                if (unlockCount < unlockFrames) return;
+                if (unlockCount < unlockFrames * (f > 1f ? 2 : 1)) return;
                 locked = false; unlockCount = 0; stillSince = -1f;
             }
             else { if (newObs) unlockCount = 0; return; }
@@ -517,6 +542,13 @@ public class AprilTagFollower : MonoBehaviour
         float a = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
         plane.SetPositionAndRotation(Vector3.Lerp(plane.position, targetPos, a),
                                      Quaternion.Slerp(plane.rotation, targetRot, a));
+    }
+
+    static bool AnyHandNear()
+    {
+        foreach (var p in HandRayPointer.All)
+            if (p != null && p.IsNearMode) return true;
+        return false;
     }
 
     // ── One Euro 필터: 속도가 느리면 강하게 거르고(떨림 제거), 빠르면 거의 그대로(지연 제거) ──
@@ -594,9 +626,9 @@ public class AprilTagFollower : MonoBehaviour
             $"rx {(rx - hudRx0) / el:F0}/s  show {(shown - hudShown0) / el:F0}/s  decode {WindowCaptureHub.DecodeMs:F0}ms");
         hudRx0 = rx; hudShown0 = shown;
         hud.text = $"APP {hudFps:F0}fps  tagFind {hudDetectMs:F0}ms (bg)  STREAM {stream}\n" +
-                   $"TAG {(IsTracking ? "SEEN" : "LOST")}{(locked ? " LOCK" : "")}  det {hudDetections / el:F0}/s  tag {EffectiveTagSize * 100f:F1}cm\n" +
+                   $"TAG {(IsTracking ? "SEEN" : "LOST")}{(locked ? " LOCK" : "")}{(hudOutliers > 0 ? $" skip{hudOutliers}" : "")}  det {hudDetections / el:F0}/s  tag {EffectiveTagSize * 100f:F1}cm\n" +
                    $"DEPTH {hudDepthHits / el:F0}/s  ratio x{depthRatio:F2}  {hudDepth}";
-        hudDetections = 0; hudDepthHits = 0; hudTime = Time.time;
+        hudDetections = 0; hudDepthHits = 0; hudOutliers = 0; hudTime = Time.time;
     }
 
     // 깊이 센서가 알려준 실제 태그 크기 (흰 네모 한 변, m)
