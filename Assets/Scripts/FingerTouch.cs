@@ -109,6 +109,7 @@ public class FingerTouch : MonoBehaviour
         public float stillSince = -1f;
         public float fitProgress;   // 0~1 (구체 색 표시용)
         public float lastIdx, lastOthers;   // 상태 글자용: 검지/나머지 펴진 정도
+        public string diag = "";
     }
 
     // 다른 스크립트(상태 글자 등)가 읽는 손별 상태
@@ -116,7 +117,7 @@ public class FingerTouch : MonoBehaviour
     {
         if (!states.TryGetValue(p, out var st)) return "-";
         string s = st.down ? "TOUCH" : st.blocked ? "HOLD" : st.pointing ? "POINT" : "idle";
-        return $"{s} i{st.lastIdx:F2} o{st.lastOthers:F2}";
+        return $"{s} i{st.lastIdx:F2} o{st.lastOthers:F2} {st.diag}";
     }
 
     readonly Dictionary<HandRayPointer, TouchState> states = new();
@@ -138,6 +139,8 @@ public class FingerTouch : MonoBehaviour
 
             bool allowed = touchEnabled && p.IsHandTracked && !(rightHandOnly && IsLeft(p));
             Transform tip = allowed ? IndexTip(p) : null;
+            st.diag = DiagSkeleton(p) + (allowed ? "" : $" notAllowed(tracked={p.IsHandTracked})")
+                    + (tip == null ? " noTip" : "") + (pc == null ? " noPC" : (!pc.IsConnected ? " pcOff" : ""));
             if (tip == null || pc == null || !pc.IsConnected) { Release(st, pc, false); st.pointing = false; st.blocked = false; ShowSphere(p, st, null); continue; }
 
             // 손 모양 읽기 → 가리키기인지 / 종이를 잡고 있는지 / 노트북을 옮기는 중인지
@@ -425,6 +428,14 @@ public class FingerTouch : MonoBehaviour
     }
 
     static bool IsLeft(HandRayPointer p) => p.IsLeftHand();
+
+    static string DiagSkeleton(HandRayPointer p)
+    {
+        var sk = p.skeleton != null ? p.skeleton : (p.hand != null ? p.hand.GetComponent<OVRSkeleton>() : null);
+        if (sk == null) return "sk=null";
+        int n = sk.Bones != null ? sk.Bones.Count : -1;
+        return $"sk={sk.GetSkeletonType()} init={sk.IsInitialized} bones={n}";
+    }
 
     // ── 손 모양 ─────────────────────────────────────────────────────────────
     public struct HandShape

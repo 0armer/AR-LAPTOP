@@ -788,6 +788,22 @@ class Program
         catch (Exception ex) { Console.WriteLine($"Receive error: {ex.Message}"); }
     }
 
+    // 헤드셋 상태 기록 파일: PCCaptureServer\headset_log.txt (2MB 넘으면 새로 시작)
+    static readonly object headsetLogLock = new object();
+    static void LogHeadset(string line)
+    {
+        try
+        {
+            string path = Path.Combine(Directory.GetCurrentDirectory(), "headset_log.txt");
+            lock (headsetLogLock)
+            {
+                if (File.Exists(path) && new FileInfo(path).Length > 2_000_000) File.Delete(path);
+                File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss.f") + "  " + line + Environment.NewLine);
+            }
+        }
+        catch { }
+    }
+
     static async Task HandleMessage(string msg, WebSocket ws)
     {
         try
@@ -860,6 +876,13 @@ class Program
             {
                 string body = msg.Length > 4 ? msg.Substring(4) : "";
                 Console.WriteLine("  [헤드셋] " + body);
+                LogHeadset(body);
+                return;
+            }
+            // 헤드셋 상태(1초마다): 콘솔엔 안 찍고 파일에만 남김 (문제 진단용)
+            if (type == "diag")
+            {
+                LogHeadset(msg.Length > 5 ? msg.Substring(5) : "");
                 return;
             }
 

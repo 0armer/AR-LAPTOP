@@ -38,3 +38,4 @@ publish/
 # OS
 .DS_Store
 Thumbs.db
+headset_log.txt

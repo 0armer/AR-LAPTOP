@@ -599,7 +599,7 @@ public class AprilTagFollower : MonoBehaviour
 
     // ── 시야 아래 상태 글자 (영어: 헤드셋 기본 글꼴에 한글이 없을 수 있음) ──
     TextMesh hud;
-    float hudDetectMs, hudFps = 72f;
+    float hudDetectMs, hudFps = 72f, diagSent;
     long hudRx0, hudShown0;
     string hudDepth = "-";
     int hudDetections, hudDepthHits;
@@ -647,6 +647,14 @@ public class AprilTagFollower : MonoBehaviour
                    $"TAG {(IsTracking ? "SEEN" : "LOST")}{(locked ? " LOCK" : "")}{(hudOutliers > 0 ? $" skip{hudOutliers}" : "")}  det {hudDetections / el:F0}/s  tag {EffectiveTagSize * 100f:F1}cm\n" +
                    $"DEPTH {hudDepthHits / el:F0}/s  ratio x{depthRatio:F2}  {hudDepth}";
         hudDetections = 0; hudDepthHits = 0; hudOutliers = 0; hudTime = Time.time;
+
+        // 같은 내용을 1초마다 PC로 보내 파일(headset_log.txt)에 남긴다 → 헤드셋 안을 못 봐도 진단 가능
+        if (Time.time - diagSent > 1f)
+        {
+            diagSent = Time.time;
+            var pcr = PCStreamReceiver.Instance;
+            if (pcr != null && pcr.IsConnected) pcr.SendText("diag," + hud.text.Replace("\n", " | "));
+        }
     }
 
     // 깊이 센서가 알려준 실제 태그 크기 (흰 네모 한 변, m)
