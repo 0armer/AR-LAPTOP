@@ -50,6 +50,10 @@ public class HandRayPointer : MonoBehaviour
     [Header("주먹 판정용 손가락 말림(curl) 기준 - skeleton 연결했을 때만 사용")]
     [Tooltip("손가락을 쫙 폈을 때, 손끝-손목 거리(미터, 평균 손 크기 기준). 이보다 멀면 curl=0")]
     public float curlOpenDistance = 0.16f;
+    [Tooltip("[AR LAPTOP] 주먹은 검지도 접혀 있어야 인정 (검지 펴면 = 가리키기, 주먹 아님)")]
+    public bool requireIndexCurledForGrab = true;
+    [Tooltip("검지 말림 정도가 이 값 이상이어야 주먹 (0 = 쭉 폄, 1 = 완전히 접음)")]
+    [Range(0f, 1f)] public float indexCurlForGrab = 0.35f;
     [Tooltip("주먹을 완전히 쥐었을 때, 손끝-손목 거리(미터, 평균 손 크기 기준). 이보다 가까우면 curl=1")]
     public float curlClosedDistance = 0.07f;
 
@@ -425,6 +429,11 @@ public class HandRayPointer : MonoBehaviour
                 float ringCurl = FingerCurl(OVRSkeleton.BoneId.Hand_RingTip);
                 float pinkyCurl = FingerCurl(OVRSkeleton.BoneId.Hand_PinkyTip);
                 otherFingersRaw = Mathf.Max(midCurl, Mathf.Max(ringCurl, pinkyCurl));
+
+                // [AR LAPTOP] 검지가 펴져 있으면(가리키기) 주먹이 아니다.
+                // 예전엔 나머지 세 손가락만 봐서, 가리키기 모양도 주먹으로 잡혀 데스크탑을 잡아버렸다.
+                if (requireIndexCurledForGrab && FingerCurl(OVRSkeleton.BoneId.Hand_IndexTip) < indexCurlForGrab)
+                    otherFingersRaw = 0f;
             }
             else
             {

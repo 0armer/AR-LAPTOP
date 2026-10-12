@@ -48,13 +48,13 @@ public class FingerTouch : MonoBehaviour
     [Tooltip("검지를 펴고 나머지 세 손가락을 접은 '가리키기' 모양일 때만 터치 시작")]
     public bool requirePointing = true;
     [Tooltip("검지가 이만큼 이상 펴져야 가리키기 (1 = 일자, 손가락 마디 길이 대비 끝까지 거리)")]
-    public float indexStraightOn = 0.90f;
+    public float indexStraightOn = 0.85f;
     [Tooltip("가리키기 유지 중엔 이 아래로 떨어져야 풀림 (떨림 방지)")]
-    public float indexStraightOff = 0.82f;
+    public float indexStraightOff = 0.75f;
     [Tooltip("중지·약지·새끼가 모두 이보다 덜 펴져야(=접혀야) 가리키기")]
-    public float othersCurledOn = 0.80f;
+    public float othersCurledOn = 0.85f;
     [Tooltip("가리키기 유지 중엔 셋 중 하나라도 이보다 펴지면 풀림")]
-    public float othersCurledOff = 0.88f;
+    public float othersCurledOff = 0.92f;
     [Tooltip("엄지·중지·약지·새끼 끝 중 하나라도 판 뒤로 이만큼(m) 넘어가 있으면 '종이를 잡고 있음' → 그 손 터치 꺼짐")]
     public float behindTolerance = 0.015f;
     [Tooltip("노트북(태그)이 움직이는 중이면 터치 꺼짐 (들고 옮기는 중)")]
@@ -108,13 +108,15 @@ public class FingerTouch : MonoBehaviour
         public Vector3 stillPos;
         public float stillSince = -1f;
         public float fitProgress;   // 0~1 (구체 색 표시용)
+        public float lastIdx, lastOthers;   // 상태 글자용: 검지/나머지 펴진 정도
     }
 
     // 다른 스크립트(상태 글자 등)가 읽는 손별 상태
     public string DebugState(HandRayPointer p)
     {
         if (!states.TryGetValue(p, out var st)) return "-";
-        return st.down ? "TOUCH" : st.blocked ? "HOLD" : st.pointing ? "POINT" : "idle";
+        string s = st.down ? "TOUCH" : st.blocked ? "HOLD" : st.pointing ? "POINT" : "idle";
+        return $"{s} i{st.lastIdx:F2} o{st.lastOthers:F2}";
     }
 
     readonly Dictionary<HandRayPointer, TouchState> states = new();
@@ -482,8 +484,9 @@ public class FingerTouch : MonoBehaviour
 
     void UpdatePointing(TouchState st, HandShape hs)
     {
-        if (!hs.valid) { st.pointing = false; return; }
+        if (!hs.valid) { st.pointing = false; st.lastIdx = 0f; st.lastOthers = 0f; return; }
         float others = Mathf.Max(hs.middle, Mathf.Max(hs.ring, hs.little));
+        st.lastIdx = hs.index; st.lastOthers = others;
         st.pointing = st.pointing
             ? hs.index >= indexStraightOff && others <= othersCurledOff
             : hs.index >= indexStraightOn && others <= othersCurledOn;
