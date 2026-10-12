@@ -313,7 +313,8 @@ public class HandRayPointer : MonoBehaviour
         // [AR LAPTOP] 가까이 모드: 검지 끝이 화면 판/꺼낸 창에 가까우면 레이·핀치·주먹을 끄고
         // 검지 터치(FingerTouch)만 쓴다. 이미 잡고/끌고 있는 중이면 그 동작이 끝날 때까지 기다린다.
         UpdateNearMode();
-        if (IsNearMode)
+        UpdatePointingPose();
+        if (IsNearMode || IsPointingPose)   // 가까이 있거나, 검지를 편 가리키기 모양이면 레이·핀치·주먹 전부 끔
         {
             if (line != null) line.enabled = false;
             wasPinch = false; wasGrab = false; wasActivate = false;
@@ -947,6 +948,27 @@ public class HandRayPointer : MonoBehaviour
         for (var tr = hand != null ? hand.transform : transform; tr != null; tr = tr.parent)
             if (tr.name.IndexOf("left", System.StringComparison.OrdinalIgnoreCase) >= 0) return true;
         return false;
+    }
+
+    // [AR LAPTOP] 검지를 쭉 펴고 나머지를 접은 "가리키기" 모양이면 거리와 상관없이 레이를 끈다.
+    // (가리키기는 중지·약지·새끼가 접혀 있어서 주먹으로 오인되기 쉬움 → 아예 레이 쪽 판정을 막음)
+    public bool IsPointingPose { get; private set; }
+    [Tooltip("검지를 편 가리키기 모양이면 거리와 상관없이 레이·핀치·주먹을 끈다")]
+    public bool pointingDisablesRay = true;
+
+    void UpdatePointingPose()
+    {
+        bool holdingWindow = heldQuad != null || grabbedQuad != null || dragging;
+        if (!pointingDisablesRay || holdingWindow || hand == null || !hand.IsTracked) { IsPointingPose = false; return; }
+        var ft = FingerTouch.Instance;
+        var hs = FingerTouch.ReadShape(this);
+        if (!hs.valid) return;   // 뼈대를 잠깐 못 읽으면 직전 상태 유지
+        float others = Mathf.Max(hs.middle, Mathf.Max(hs.ring, hs.little));
+        float idxOn = ft != null ? ft.indexStraightOn : 0.85f, idxOff = ft != null ? ft.indexStraightOff : 0.75f;
+        float othOn = ft != null ? ft.othersCurledOn : 0.85f, othOff = ft != null ? ft.othersCurledOff : 0.92f;
+        bool now = IsPointingPose ? (hs.index >= idxOff && others <= othOff) : (hs.index >= idxOn && others <= othOn);
+        if (now && !IsPointingPose) ReleaseAllInteractions();
+        IsPointingPose = now;
     }
 
     void UpdateNearMode()

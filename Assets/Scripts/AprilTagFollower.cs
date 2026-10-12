@@ -641,7 +641,7 @@ public class AprilTagFollower : MonoBehaviour
         string hands = "";
         var ft = FingerTouch.Instance;
         foreach (var hp in HandRayPointer.All)
-            if (hp != null) hands += $"{(hp.IsLeftHand() ? "L" : "R")}:{(hp.IsNearMode ? "near " : "ray ")}{(ft != null ? ft.DebugState(hp) : "")}  ";
+            if (hp != null) hands += $"{(hp.IsLeftHand() ? "L" : "R")}:{(hp.IsPointingPose ? "point " : hp.IsNearMode ? "near " : "ray ")}{(ft != null ? ft.DebugState(hp) : "")}  ";
         hud.text = $"HANDS {hands}{(IsMoving ? " LAPTOP-MOVING" : "")}\n" +
                    $"APP {hudFps:F0}fps  tagFind {hudDetectMs:F0}ms (bg)  STREAM {stream}\n" +
                    $"TAG {(IsTracking ? "SEEN" : "LOST")}{(locked ? " LOCK" : "")}{(hudOutliers > 0 ? $" skip{hudOutliers}" : "")}  det {hudDetections / el:F0}/s  tag {EffectiveTagSize * 100f:F1}cm\n" +
