@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using AprilTag;
 using Meta.XR;
 using Unity.Collections;
@@ -61,7 +62,7 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("가만히 있을 때 거르는 정도(Hz). 작을수록 안정적, 클수록 빠릿")]
     public float filterMinCutoff = 0.5f;
     [Tooltip("움직일 때 반응 속도. 클수록 빠르게 붙음 (늦게 따라오면 올리기)")]
-    public float filterBeta = 8f;
+    public float filterBeta = 20f;   // 움직일 때 빠릿하게 (가만히 있을 땐 고정 잠금이 떨림을 잡음)
     [Tooltip("회전: 가만히 있을 때 거르는 정도(Hz)")]
     public float rotMinCutoff = 0.3f;
     [Tooltip("회전: 돌릴 때 반응 속도")]
@@ -93,7 +94,7 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("헤드셋 시야 아래에 상태 글자 띄우기 (태그·깊이 센서 확인용)")]
     public bool showHud = true;
     [Tooltip("물체 움직임을 앞으로 예측하는 시간. 노이즈를 증폭시켜 떨림의 원인이 되므로 기본 0 (끔)")]
-    [Range(0f, 0.15f)] public float predictSeconds = 0f;
+    [Range(0f, 0.15f)] public float predictSeconds = 0.03f;   // 움직일 때만 적용 (아래 PlaceFixed)
     [Tooltip("태그를 놓쳐도 이 시간(초)까지는 마지막 위치에 보여줌. 넘으면 화면 판을 숨긴다")]
     public float lostTimeout = 0.5f;
     [Tooltip("태그 위치에 작은 큐브를 띄워 인식 확인")]
@@ -183,6 +184,7 @@ public class AprilTagFollower : MonoBehaviour
         if (Instance == this) Instance = null;
         detector?.Dispose();
         detector = null;
+        for (int i = 0; i < Slots; i++) { if (!slotBusy[i]) dets[i]?.Dispose(); dets[i] = null; }
     }
 
     void Start()
@@ -258,21 +260,41 @@ public class AprilTagFollower : MonoBehaviour
         public Pose camPose;
         public TagPose[] tags;
         public double ms;
+        public float captureTime;   // 이 영상을 요청한 시각 (지연 보정·순서 정리용)
+        public int slot;
     }
-    Color32[] imgBuf;
-    volatile bool bgBusy;
-    DetectJob? bgResult;
+    // [AR LAPTOP] 카메라 영상 2장을 동시에 처리한다 (하나 찾는 동안 다음 영상도 받아서 찾기 시작)
+    // → 예전엔 한 장 다 끝나야 다음 장을 받아서 초당 12~14번밖에 못 찾았다.
+    const int Slots = 2;
+    readonly TagDetector[] dets = new TagDetector[Slots];
+    readonly int[] detWs = new int[Slots], detHs = new int[Slots];
+    readonly Color32[][] bufs = new Color32[Slots][];
+    readonly bool[] slotBusy = new bool[Slots];
+    int inFlight;                                   // 요청했지만 아직 처리 안 끝난 영상 수 (메인 스레드에서만)
+    readonly List<DetectJob> bgResults = new List<DetectJob>();
+    float lastHandledCapture = -1f;
+    float obsCapture;                               // 마지막 관측 영상의 시각
     readonly object bgLock = new object();
 
     void Update()
     {
-        // 백그라운드 결과가 왔으면 메인 스레드에서 마저 처리
-        DetectJob? res = null;
-        lock (bgLock) { if (bgResult.HasValue) { res = bgResult; bgResult = null; } }
-        if (res.HasValue) { HandleDetections(res.Value); pending = false; }
+        // 백그라운드 결과들을 찍은 순서대로 처리 (늦게 도착한 옛 영상은 버림)
+        List<DetectJob> got = null;
+        lock (bgLock) { if (bgResults.Count > 0) { got = new List<DetectJob>(bgResults); bgResults.Clear(); } }
+        if (got != null)
+        {
+            got.Sort((a, b) => a.captureTime.CompareTo(b.captureTime));
+            foreach (var r in got)
+            {
+                inFlight--;
+                if (r.captureTime <= lastHandledCapture) continue;
+                lastHandledCapture = r.captureTime;
+                HandleDetections(r);
+            }
+        }
 
         if (pca == null || !pca.isActiveAndEnabled || !pca.IsPlaying) return;
-        if (pending || bgBusy || !pca.IsUpdatedThisFrame) return;
+        if (inFlight >= Slots || !pca.IsUpdatedThisFrame) return;
 
         var tex = pca.GetTexture();
         if (tex == null) return;
@@ -280,27 +302,36 @@ public class AprilTagFollower : MonoBehaviour
         Pose camPose = pca.GetCameraPose();         // 이 영상을 찍은 순간의 카메라 위치
         Vector2Int cur = pca.CurrentResolution;
         var intr = pca.Intrinsics;
-        pending = true;
+        float capT = Time.time;
+        inFlight++;
 
         AsyncGPUReadback.Request(tex, 0, TextureFormat.RGBA32, req =>
         {
-            if (req.hasError || this == null) { pending = false; return; }
+            if (req.hasError || this == null) { inFlight--; return; }
             var data = req.GetData<Color32>();
-            if (!Detect(data, req.width, req.height, camPose, cur, intr)) pending = false;
+            if (!Detect(data, req.width, req.height, camPose, cur, intr, capT)) inFlight--;
         });
     }
 
     // 영상을 복사해서 백그라운드로 넘긴다. 넘겼으면 true.
     bool Detect(NativeArray<Color32> data, int w, int h, Pose camPose, Vector2Int cur,
-                PassthroughCameraAccess.CameraIntrinsics intr)
+                PassthroughCameraAccess.CameraIntrinsics intr, float capT)
     {
         if (data.Length < w * h) return false;
-        if (detector == null || detW != w || detH != h)
+        int slot = -1;
+        lock (bgLock)
         {
-            detector?.Dispose();
-            detector = new TagDetector(w, h, Mathf.Clamp(decimation, 1, 4));
-            detW = w; detH = h;
-            Debug.Log($"[AprilTag] 영상 {w}x{h}, 감지기 준비");
+            for (int i = 0; i < Slots; i++) if (!slotBusy[i]) { slot = i; break; }
+            if (slot >= 0) slotBusy[slot] = true;
+        }
+        if (slot < 0) return false;
+
+        if (dets[slot] == null || detWs[slot] != w || detHs[slot] != h)
+        {
+            dets[slot]?.Dispose();
+            dets[slot] = new TagDetector(w, h, Mathf.Clamp(decimation, 1, 4));
+            detWs[slot] = w; detHs[slot] = h;
+            Debug.Log($"[AprilTag] 영상 {w}x{h}, 감지기 {slot} 준비");
         }
 
         // 렌즈 값(초점거리·중심점)을 지금 해상도 픽셀로 환산 (센서가 잘려서 들어올 수 있음)
@@ -315,30 +346,28 @@ public class AprilTagFollower : MonoBehaviour
         float cy = (intr.PrincipalPoint.y - cropOrigin.y) * k;
         float fovY = 2f * Mathf.Atan(h * 0.5f / fy);            // keijiro는 세로 시야각(라디안)을 받는다
 
-        if (imgBuf == null || imgBuf.Length != w * h) imgBuf = new Color32[w * h];
+        if (bufs[slot] == null || bufs[slot].Length != w * h) bufs[slot] = new Color32[w * h];
+        var buf = bufs[slot];
         var span = data.AsReadOnlySpan().Slice(0, w * h);
         if (flipVertical)
             for (int y = 0; y < h; y++)
-                span.Slice((h - 1 - y) * w, w).CopyTo(new Span<Color32>(imgBuf, y * w, w));
-        else span.CopyTo(imgBuf);
+                span.Slice((h - 1 - y) * w, w).CopyTo(new Span<Color32>(buf, y * w, w));
+        else span.CopyTo(buf);
 
-        var job = new DetectJob { w = w, h = h, fx = fx, fy = fy, cx = cx, cy = cy, camPose = camPose };
-        var det = detector;
-        var buf = imgBuf;
+        var job = new DetectJob { w = w, h = h, fx = fx, fy = fy, cx = cx, cy = cy, camPose = camPose, captureTime = capT, slot = slot };
+        var det = dets[slot];
         float size = tagSize;
-        bgBusy = true;
         System.Threading.Tasks.Task.Run(() =>
         {
             try
             {
                 var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 det.ProcessImageNoJobs(buf, fovY, size);
-                job.tags = new System.Collections.Generic.List<TagPose>(det.DetectedTags).ToArray();
+                job.tags = new List<TagPose>(det.DetectedTags).ToArray();
                 job.ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
             }
             catch (Exception e) { Debug.LogWarning("[AprilTag] 태그 찾기 오류: " + e.Message); job.tags = Array.Empty<TagPose>(); }
-            lock (bgLock) bgResult = job;
-            bgBusy = false;
+            lock (bgLock) { bgResults.Add(job); slotBusy[job.slot] = false; }
         });
         return true;
     }
@@ -421,6 +450,7 @@ public class AprilTagFollower : MonoBehaviour
             obsPos = newPos;
             obsRot = newRot;
             obsTime = Time.time;
+            obsCapture = dj.captureTime;
             hasObs = true;
             statHits++;
             break;
@@ -479,7 +509,10 @@ public class AprilTagFollower : MonoBehaviour
              half - cornerOffset.y - quadHeight * 0.5f,
             -liftFromSurface - surfaceOffset);
         // 예측: 마지막 관측 이후 흐른 시간 + 처리 지연만큼 앞으로
-        float ahead = predictSeconds > 0f ? Mathf.Min(Time.time - obsTime + predictSeconds, 0.2f) : 0f;
+        // 노트북이 움직이는 중에만: 영상을 찍은 뒤 처리까지 걸린 시간만큼 속도로 앞당겨 놓는다 (늦게 따라오는 느낌 제거)
+        // 가만히 있을 땐 예측 안 함 (떨림이 커지므로)
+        bool movingNow = !locked && velPos.magnitude > movingSpeed;
+        float ahead = predictSeconds > 0f && movingNow ? Mathf.Min(Time.time - obsCapture + predictSeconds, 0.2f) : 0f;
         Vector3 pPos = obsPos + velPos * ahead;
         Quaternion pRot = obsRot;
         if (ahead > 0f && velRot.sqrMagnitude > 1e-6f)
