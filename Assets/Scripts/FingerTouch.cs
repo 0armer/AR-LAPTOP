@@ -58,7 +58,7 @@ public class FingerTouch : MonoBehaviour
     [Tooltip("엄지·중지·약지·새끼 끝 중 하나라도 판 뒤로 이만큼(m) 넘어가 있으면 '종이를 잡고 있음' → 그 손 터치 꺼짐")]
     public float behindTolerance = 0.015f;
     [Tooltip("노트북(태그)이 움직이는 중이면 터치 꺼짐 (들고 옮기는 중)")]
-    public bool blockWhileLaptopMoving = true;
+    public bool blockWhileLaptopMoving = false;   // [AR LAPTOP] 손이 태그를 가리면 "움직임"으로 오인해 터치가 막혔음 → 끔 (쥐기는 손가락 위치로 따로 막음)
 
     [Header("검지 끝 표시 구체")]
     [Tooltip("가리키기 모양일 때 검지 끝에 작은 구체를 띄움 (닿으면 빨간색)")]

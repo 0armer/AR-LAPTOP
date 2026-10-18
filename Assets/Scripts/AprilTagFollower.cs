@@ -62,7 +62,9 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("가만히 있을 때 거르는 정도(Hz). 작을수록 안정적, 클수록 빠릿")]
     public float filterMinCutoff = 0.5f;
     [Tooltip("움직일 때 반응 속도. 클수록 빠르게 붙음 (늦게 따라오면 올리기)")]
-    public float filterBeta = 20f;   // 움직일 때 빠릿하게 (가만히 있을 땐 고정 잠금이 떨림을 잡음)
+    public float filterBeta = 12f;   // 움직일 때 빠릿하게 (너무 크면 고정이 풀린 순간 떨림이 그대로 보임)
+    [Tooltip("이 속도(m/s) 이상으로 움직일 때만 처리 지연만큼 앞당겨 예측")]
+    public float predictMinSpeed = 0.15f;
     [Tooltip("회전: 가만히 있을 때 거르는 정도(Hz)")]
     public float rotMinCutoff = 0.3f;
     [Tooltip("회전: 돌릴 때 반응 속도")]
@@ -72,9 +74,12 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("판이 이 각도(도)보다 적게 어긋나면 안 돌리고 가만히 둔다")]
     public float holdAngle = 2f;
     [Tooltip("고정 상태에서 이 거리(m) 넘게 어긋나야 움직인 걸로 본다")]
-    public float unlockPosition = 0.012f;
+    public float unlockPosition = 0.015f;
     [Tooltip("고정 상태에서 이 각도(도) 넘게 어긋나야 움직인 걸로 본다")]
-    public float unlockAngle = 4f;
+    public float unlockAngle = 6f;   // 작은 태그는 기울기가 몇 도씩 튐 → 위치보다 둔하게
+    [Tooltip("이 시간(초) 동안 계속 어긋나야 '움직였다'로 보고 고정을 푼다 (고개 돌릴 때 생기는 순간 오차 무시)")]
+    public float unlockHoldTime = 0.25f;
+    float deviateSince = -1f;
     [Tooltip("연속 몇 번 어긋나야 고정을 풀지 (튀는 값 무시)")]
     public int unlockFrames = 2;
     [Tooltip("이 시간(초) 가만히 있으면 고정")]
@@ -86,7 +91,7 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("튄 값이 연속 몇 번 나와야 진짜로 인정할지")]
     public int outlierFrames = 3;
     [Tooltip("손이 화면 가까이 있을 때(손이 태그를 가리기 쉬움) 고정을 풀기 어렵게 하는 배수")]
-    public float nearHandLockFactor = 3f;
+    public float nearHandLockFactor = 3.5f;
     int outlierStreak, hudOutliers;
     bool locked;
     int unlockCount;
@@ -511,7 +516,7 @@ public class AprilTagFollower : MonoBehaviour
         // 예측: 마지막 관측 이후 흐른 시간 + 처리 지연만큼 앞으로
         // 노트북이 움직이는 중에만: 영상을 찍은 뒤 처리까지 걸린 시간만큼 속도로 앞당겨 놓는다 (늦게 따라오는 느낌 제거)
         // 가만히 있을 땐 예측 안 함 (떨림이 커지므로)
-        bool movingNow = !locked && velPos.magnitude > movingSpeed;
+        bool movingNow = !locked && velPos.magnitude > predictMinSpeed;   // 실제로 빠르게 움직일 때만 예측
         float ahead = predictSeconds > 0f && movingNow ? Mathf.Min(Time.time - obsCapture + predictSeconds, 0.2f) : 0f;
         Vector3 pPos = obsPos + velPos * ahead;
         Quaternion pRot = obsRot;
@@ -543,7 +548,7 @@ public class AprilTagFollower : MonoBehaviour
         }
         if (forceSnap)   // 손가락으로 면을 맞춘 직후: 고정 상태 무시하고 바로 옮김
         {
-            forceSnap = false; locked = false; unlockCount = 0; stillSince = -1f;
+            forceSnap = false; locked = false; unlockCount = 0; stillSince = -1f; deviateSince = -1f;
             plane.SetPositionAndRotation(targetPos, targetRot);
             return;
         }
@@ -555,7 +560,7 @@ public class AprilTagFollower : MonoBehaviour
 
         if (reacquired)
         {
-            locked = false; unlockCount = 0; stillSince = -1f;
+            locked = false; unlockCount = 0; stillSince = -1f; deviateSince = -1f;
             plane.SetPositionAndRotation(targetPos, targetRot);
             return;
         }
@@ -564,16 +569,17 @@ public class AprilTagFollower : MonoBehaviour
         // 측정값이 한두 번 튀는 건 무시하고, 연속 unlockFrames번 크게 어긋나야 "진짜 움직였다"고 보고 풀어준다.
         if (locked)
         {
-            // 손이 화면 가까이 있으면(터치 중 등) 태그가 가려져 값이 흔들리기 쉬우므로 훨씬 단단히 고정
-            // 화면을 누르는 중에만(손이 태그를 가리기 쉬움) 더 단단히 고정. 그 외엔 바로 따라감
-            float f = FingerTouch.AnyTouchDown ? nearHandLockFactor : 1f;
+            // 손이 화면 가까이 있으면 태그가 가려져 값이 흔들린다 → 그동안은 더 단단히 고정 (누르는 중엔 가장 단단히)
+            float f = FingerTouch.AnyTouchDown ? nearHandLockFactor : AnyHandNear() ? nearHandLockFactor * 0.7f : 1f;
             if (dist > unlockPosition * f || ang > unlockAngle * f)
             {
-                if (newObs) unlockCount++;
-                if (unlockCount < unlockFrames * (f > 1f ? 2 : 1)) return;
-                locked = false; unlockCount = 0; stillSince = -1f;
+                // "몇 번 연속"이 아니라 "얼마 동안 계속" 어긋나야 풀어준다.
+                // (태그 찾는 횟수가 늘면 연속 2번이 0.07초밖에 안 돼서, 고개만 돌려도 풀리던 문제)
+                if (deviateSince < 0f) deviateSince = Time.time;
+                if (Time.time - deviateSince < unlockHoldTime * (f > 1f ? 2f : 1f)) return;
+                locked = false; deviateSince = -1f; stillSince = -1f;
             }
-            else { if (newObs) unlockCount = 0; return; }
+            else { deviateSince = -1f; return; }
         }
 
         // ── 따라가는 상태: 움직임이 잦아들어 잠깐 가만히 있으면 다시 고정 ──
