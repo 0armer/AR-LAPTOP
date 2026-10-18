@@ -385,14 +385,14 @@ public class FingerTouch : MonoBehaviour
             if (st.desktopMode == 1)
             {
                 // 스마트폰처럼: 손가락 위로 → 내용도 위로 → 아래로 스크롤
-                float y = local.y * st.target.lossyScale.y;
-                st.scrollAccum += y - st.lastY;
-                st.lastY = y;
+                float yNow = local.y * st.target.lossyScale.y;
+                st.scrollAccum += yNow - st.lastY;
+                st.lastY = yNow;
                 while (Mathf.Abs(st.scrollAccum) >= scrollMetersPerNotch)
                 {
-                    int dir = st.scrollAccum > 0f ? 1 : -1;
-                    st.scrollAccum -= dir * scrollMetersPerNotch;
-                    pc.SendText(string.Format("scroll,{0:F4},{1:F4},{2},{3}", st.startUV.x, st.startUV.y, st.monitorIndex, -120 * dir));
+                    int sdir = st.scrollAccum > 0f ? 1 : -1;
+                    st.scrollAccum -= sdir * scrollMetersPerNotch;
+                    pc.SendText(string.Format("scroll,{0:F4},{1:F4},{2},{3}", st.startUV.x, st.startUV.y, st.monitorIndex, -120 * sdir));
                 }
                 return;
             }
