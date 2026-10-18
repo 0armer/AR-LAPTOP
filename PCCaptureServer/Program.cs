@@ -894,7 +894,7 @@ class Program
             MapToMonitor(mon, u, v, out int x, out int y);
 
             // 누르기/떼기 때만 바로 찍는다. 움직일 때마다 찍으면 서버가 캡처만 하다가 버벅인다.
-            if (type == "down" || type == "up") KickDesktop();
+            if (type == "down" || type == "up" || type == "scroll") KickDesktop();
 
             switch (type)
             {
@@ -913,6 +913,13 @@ class Program
                 case "up":
                     SetCursorPos(x, y);
                     mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, IntPtr.Zero);
+                    break;
+                case "scroll":  // [AR LAPTOP] 데스크탑 판을 손가락으로 위아래 밀기: "scroll,u,v,mon,delta" (120 = 휠 한 칸)
+                    if (parts.Length >= 5 && int.TryParse(parts[4], out int wheel))
+                    {
+                        SetCursorPos(x, y);
+                        mouse_event(MOUSEEVENTF_WHEEL, 0, 0, (uint)wheel, IntPtr.Zero);
+                    }
                     break;
                 case "hover":   // [AR LAPTOP] 손가락이 화면 위에 떠 있을 때 커서만 따라오게 (클릭 없음)
                     SetCursorPos(x, y);

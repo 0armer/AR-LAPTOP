@@ -83,6 +83,14 @@ public class FingerTouch : MonoBehaviour
     [Tooltip("데스크탑을 누른 뒤 이만큼(m) 움직여야 드래그 시작. 그 전까진 커서를 안 움직여서 손 떨림으로 클릭이 드래그로 바뀌지 않음")]
     public float dragStartMove = 0.012f;
 
+    [Header("데스크탑 판 손가락 동작")]
+    [Tooltip("누른 뒤 위아래로 이만큼(m) 밀면 스크롤로 판정")]
+    public float scrollStartMove = 0.012f;
+    [Tooltip("이 시간(초) 동안 꾹 누르고 있으면 마우스 드래그 모드 (창 옮기기·글자 선택)")]
+    public float longPressTime = 0.45f;
+    [Tooltip("꾹 누르는 동안 이만큼(m) 안에서만 움직여야 드래그 모드")]
+    public float longPressMaxMove = 0.008f;
+
     [Header("꺼낸 창")]
     [Tooltip("이보다 적게(m) 움직이고 떼면 클릭")]
     public float tapMaxMove = 0.015f;
@@ -103,6 +111,9 @@ public class FingerTouch : MonoBehaviour
         public float lastY;
         public bool scrolled;
         public bool dragging;
+        public int desktopMode;     // 데스크탑 판: 0 = 아직 모름, 1 = 스크롤, 2 = 꾹 눌러 드래그, 3 = 옆으로 밀기(무시)
+        public float downTime;
+        public bool mouseDown;      // PC에 실제로 마우스 누름을 보냈는지
         public bool pointing;
         public bool blocked;     // 잡기/이동 중이라 막힘
         public Transform sphere;
@@ -213,9 +224,11 @@ public class FingerTouch : MonoBehaviour
         st.scrolled = false;
         st.dragging = false;
         st.lastSend = Time.time;
-
-        if (st.isDesktop)
-            pc.SendText(string.Format("down,{0:F4},{1:F4},{2}", st.lastUV.x, st.lastUV.y, st.monitorIndex));
+        st.desktopMode = 0;
+        st.downTime = Time.time;
+        st.mouseDown = false;
+        // [AR LAPTOP] 데스크탑 판도 꺼낸 창처럼: 바로 마우스를 누르지 않고, 손가락이 뭘 하는지 보고 정한다
+        //   톡 치고 떼기 = 클릭 / 위아래로 밀기 = 스크롤 / 꾹 누르고 있다가 끌기 = 마우스 드래그(창 옮기기·글자 선택)
     }
 
     // ── 손가락으로 판 면 맞추기 ─────────────────────────────────────────────
@@ -298,7 +311,8 @@ public class FingerTouch : MonoBehaviour
         st.sphere.gameObject.SetActive(true);
         st.sphere.position = tip.position;
         st.sphere.localScale = Vector3.one * tipSphereSize;
-        Color c = force ?? (st.down ? touchColor
+        Color c = force ?? (st.down && st.mouseDown ? new Color(1f, 0.2f, 0.9f)   // 분홍 = 꾹 눌러 드래그 중
+                : st.down ? touchColor
                 : st.blocked ? blockedOrange
                 : !st.pointing ? idleGray
                 : (st.fitProgress > 0.15f || FitActive) ? Color.Lerp(pointColor, fitColor, Mathf.Max(st.fitProgress, 0.5f))
@@ -346,14 +360,44 @@ public class FingerTouch : MonoBehaviour
 
         if (st.isDesktop)
         {
-            // 떨림 방지: 일정 거리 움직이기 전까지는 누른 자리 그대로 (클릭이 드래그로 안 바뀜)
-            if (!st.dragging)
+            Vector3 dm = local - st.startLocal; dm.z = 0f;
+            Vector3 moved = Vector3.Scale(dm, st.target.lossyScale);   // 누른 자리에서 움직인 거리(m)
+
+            if (st.desktopMode == 0)
             {
-                Vector3 dm = local - st.startLocal; dm.z = 0f;
-                if (Vector3.Scale(dm, st.target.lossyScale).magnitude < dragStartMove) return;
-                st.dragging = true;
+                if (Mathf.Abs(moved.y) > scrollStartMove && Mathf.Abs(moved.y) >= Mathf.Abs(moved.x))
+                {
+                    st.desktopMode = 1;                                   // 위아래로 밀기 → 스크롤
+                    st.lastY = local.y * st.target.lossyScale.y;
+                    st.scrollAccum = 0f;
+                }
+                else if (moved.magnitude > scrollStartMove) st.desktopMode = 3;   // 옆으로 밀기 → 아무것도 안 함
+                else if (moved.magnitude < longPressMaxMove && Time.time - st.downTime > longPressTime)
+                {
+                    st.desktopMode = 2;                                   // 꾹 누르기 → 마우스 드래그 시작
+                    pc.SendText(string.Format("down,{0:F4},{1:F4},{2}", st.startUV.x, st.startUV.y, st.monitorIndex));
+                    st.mouseDown = true;
+                    st.lastUV = st.startUV;
+                }
+                return;
             }
-            if (Time.time - st.lastSend >= 1f / Mathf.Max(1f, sendRate) && (uv - st.lastUV).sqrMagnitude > 1e-7f)
+
+            if (st.desktopMode == 1)
+            {
+                // 스마트폰처럼: 손가락 위로 → 내용도 위로 → 아래로 스크롤
+                float y = local.y * st.target.lossyScale.y;
+                st.scrollAccum += y - st.lastY;
+                st.lastY = y;
+                while (Mathf.Abs(st.scrollAccum) >= scrollMetersPerNotch)
+                {
+                    int dir = st.scrollAccum > 0f ? 1 : -1;
+                    st.scrollAccum -= dir * scrollMetersPerNotch;
+                    pc.SendText(string.Format("scroll,{0:F4},{1:F4},{2},{3}", st.startUV.x, st.startUV.y, st.monitorIndex, -120 * dir));
+                }
+                return;
+            }
+
+            if (st.desktopMode == 2 && Time.time - st.lastSend >= 1f / Mathf.Max(1f, sendRate) && (uv - st.lastUV).sqrMagnitude > 1e-7f)
             {
                 pc.SendText(string.Format("move,{0:F4},{1:F4},{2}", uv.x, uv.y, st.monitorIndex));
                 st.lastSend = Time.time;
@@ -385,7 +429,14 @@ public class FingerTouch : MonoBehaviour
 
         if (st.isDesktop)
         {
-            pc.SendText(string.Format("up,{0:F4},{1:F4},{2}", st.lastUV.x, st.lastUV.y, st.monitorIndex));
+            if (st.mouseDown)                                    // 꾹 눌러 드래그하던 중 → 놓기
+                pc.SendText(string.Format("up,{0:F4},{1:F4},{2}", st.lastUV.x, st.lastUV.y, st.monitorIndex));
+            else if (normal && st.desktopMode == 0)              // 톡 치고 뗌 → 클릭
+            {
+                pc.SendText(string.Format("down,{0:F4},{1:F4},{2}", st.startUV.x, st.startUV.y, st.monitorIndex));
+                pc.SendText(string.Format("up,{0:F4},{1:F4},{2}", st.startUV.x, st.startUV.y, st.monitorIndex));
+            }
+            st.mouseDown = false;
         }
         else if (normal && !st.scrolled && st.target != null)
         {

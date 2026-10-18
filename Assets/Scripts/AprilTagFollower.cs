@@ -147,6 +147,15 @@ public class AprilTagFollower : MonoBehaviour
     [Tooltip("센서로 잰 거리가 크기 기준 거리의 이 배수 범위를 벗어나면 (손에 가려짐 등) 무시")]
     public Vector2 depthAcceptRatio = new Vector2(0.25f, 4f);
     EnvironmentRaycastManager envRay;
+    [Tooltip("깊이 센서가 잰 표면 방향으로 판의 앞뒤 기울기를 정한다 (태그 기울기 뒤집힘 방지)")]
+    public bool useDepthNormal = true;
+    [Tooltip("표면 방향 측정의 신뢰도가 이 값 이상일 때만 사용")]
+    [Range(0f, 1f)] public float normalMinConfidence = 0.3f;
+    [Tooltip("표면 방향을 얼마나 천천히 바꿀지 (작을수록 안정)")]
+    [Range(0.02f, 1f)] public float normalSmoothing = 0.15f;
+    Vector3 surfNormal;
+    bool hasSurfNormal;
+    float surfNormalTime;
     float depthRatio = 1f;          // 센서 거리 / 크기 기준 거리 (부드럽게 갱신)
     bool hasDepthRatio;
     int statDepthHits;
@@ -415,6 +424,13 @@ public class AprilTagFollower : MonoBehaviour
                         statDepthHits++;
                         hudDepthHits++;
                         hudDepth = $"ok {sensed:F2}m (tag est {estDist:F2}m)";
+                        // 표면 방향(법선)도 같이 기억 → 태그 기울기가 앞뒤로 뒤집히는 걸 잡는 데 씀
+                        if (eh.normalConfidence >= normalMinConfidence && eh.normal.sqrMagnitude > 0.5f)
+                        {
+                            surfNormal = hasSurfNormal ? Vector3.Slerp(surfNormal, eh.normal.normalized, normalSmoothing) : eh.normal.normalized;
+                            hasSurfNormal = true;
+                            surfNormalTime = Time.time;
+                        }
                     }
                     else hudDepth = $"rejected r={r:F2} ({sensed:F2}m vs {estDist:F2}m)";
                 }
@@ -424,6 +440,18 @@ public class AprilTagFollower : MonoBehaviour
 
             Vector3 newPos = camPose.position + camPose.rotation * p;
             Quaternion newRot = camPose.rotation * tag.Rotation;
+
+            // [AR LAPTOP] 기울기 뒤집힘 잡기: 작은 정사각형 태그를 정면 가까이서 보면
+            // "앞으로 살짝 기운 것"과 "뒤로 살짝 기운 것"이 영상에서 거의 똑같아 보여서 둘 사이를 오간다
+            // (뒤로 젖혀지듯 흔들리던 원인). 깊이 센서가 잰 실제 표면 방향으로 판의 앞뒤 기울기를 맞추고,
+            // 태그에서는 '면 안에서 돌아간 각도'만 쓴다.
+            if (useDepthNormal && hasSurfNormal && Time.time - surfNormalTime < 0.5f)
+            {
+                Vector3 into = surfNormal;                               // 종이 속(보는 사람 반대쪽)을 향하게
+                if (Vector3.Dot(into, newPos - camPose.position) < 0f) into = -into;
+                Vector3 tagFwd = newRot * Vector3.forward;               // 태그가 생각하는 종이 속 방향
+                newRot = Quaternion.FromToRotation(tagFwd, into) * newRot;
+            }
 
             // 튀는 값 버리기: 작은 태그는 기울기가 순간적으로 수십 도 뒤집히는 일이 있다(자세 계산의 고질병).
             // 직전과 크게 다른 값은 연속 outlierFrames번 같은 쪽으로 나와야 진짜 움직임으로 인정.
