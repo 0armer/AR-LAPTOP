@@ -20,12 +20,21 @@ for %%A in ("ar laptop.apk") do echo APK 빌드 시각: %%~tA
 echo.
 echo [1/4] 퀘스트 연결 확인
 "%ADB%" devices
-"%ADB%" get-state 1>nul 2>nul
-if errorlevel 1 (
+rem USB와 무선이 둘 다 잡히면 adb가 헷갈리므로 하나를 고른다: USB 우선, 없으면 무선(IP:5555)
+set "ANDROID_SERIAL="
+for /f "skip=1 tokens=1,2" %%a in ('"%ADB%" devices') do (
+  if "%%b"=="device" (
+    echo %%a | findstr ":" >nul
+    if errorlevel 1 (set "ANDROID_SERIAL=%%a") else (if not defined ANDROID_SERIAL set "ANDROID_SERIAL=%%a")
+  )
+)
+if not defined ANDROID_SERIAL (
   echo [오류] 퀘스트가 안 잡힘. 케이블을 다시 꽂거나, 헤드셋을 쓰고 USB 디버깅 허용을 누르세요.
   pause
   exit /b 1
 )
+echo 사용할 퀘스트: %ANDROID_SERIAL%
+echo %ANDROID_SERIAL% | findstr ":" >nul && echo (무선으로 설치합니다 - 1~2분 걸릴 수 있음)
 echo.
 echo [2/4] APK를 퀘스트로 복사 중...
 "%ADB%" push "ar laptop.apk" /data/local/tmp/arlaptop.apk
