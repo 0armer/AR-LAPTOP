@@ -80,3 +80,9 @@ Thumbs.db
 # BurstDebugInformation
 *_BurstDebugInformation_DoNotShip/
 *_BackUpThisFolder_ButDontShipItWithYourGame/
+
+# [AR LAPTOP] 빌드 중간 파일·자동 복구 씬·진단 기록
+.utmp/
+Assets/_Recovery/
+Assets/_Recovery.meta
+PCCaptureServer/headset_log.txt
